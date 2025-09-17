@@ -492,7 +492,7 @@ exports.getOrdersByCustomerPhone = async (req, res) => {
   try {
     const { phone } = req.params;
     if (!phone) {
-      return res.status(400).json({ error: 'Phone parameter is required' });
+      return res.status(400).json({ success: false, message: 'Phone parameter is required' });
     }
     
     // Cari customer berdasarkan nomor telepon
@@ -501,7 +501,7 @@ exports.getOrdersByCustomerPhone = async (req, res) => {
     });
     
     if (!customer) {
-      return res.status(404).json({ error: 'Customer not found' });
+      return res.status(404).json({ success: false, message: 'Customer not found' });
     }
     
     // Dapatkan semua order untuk customer tersebut
@@ -515,11 +515,11 @@ exports.getOrdersByCustomerPhone = async (req, res) => {
     });
     
     if (!orders || orders.length === 0) {
-      return res.status(404).json({ error: 'Orders not found for this customer phone' });
+      return res.status(404).json({ success: false, message: 'Orders not found for this customer phone' });
     }
-    res.status(200).json(orders);
+    res.status(200).json({ success: true, data: orders });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, message: 'Internal server error', error: error.message });
   }
 };
 
