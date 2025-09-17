@@ -587,7 +587,8 @@ router.get('/order-by-phone', botAuth, async (req, res) => {
       return res.status(404).json({ error: 'Order tidak ada' });
     }
     const orderDetails = await models.OrderDetail.findAll({ where: { id_order: order.id_order } });
-    return res.status(200).json({ success: true, order, order_details: orderDetails });
+    // Return data directly as requested
+    return res.status(200).json({ order, order_details: orderDetails });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

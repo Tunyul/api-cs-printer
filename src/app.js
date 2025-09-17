@@ -42,18 +42,23 @@ app.get('/', (req, res) => {
   });
 });
 
-sequelize.authenticate()
-  .then(() => {
-    console.log('Database connection has been established successfully.');
-    return sequelize.sync({ alter: true });
-  })
-  .then(() => {
-    console.log('Database synchronized successfully.');
-  })
-  .catch(err => {
-    console.error('Unable to connect or sync to the database:', err);
-    process.exit(1);
-  });
+if (process.env.NODE_ENV !== 'test') {
+  sequelize.authenticate()
+    .then(() => {
+      console.log('Database connection has been established successfully.');
+      return sequelize.sync({ alter: true });
+    })
+    .then(() => {
+      console.log('Database synchronized successfully.');
+    })
+    .catch(err => {
+      console.error('Unable to connect or sync to the database:', err);
+      process.exit(1);
+    });
+} else {
+  // In test environment, skip DB connection/sync to allow unit tests to import app without DB
+  console.log('Running in test mode: skipping DB authenticate/sync');
+}
 
 const models = require('./models');
 app.set('models', models);
