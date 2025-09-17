@@ -87,23 +87,23 @@ router.post('/payment', botAuth, async (req, res) => {
  *     security:
  *       - ApiKeyAuth: []
  *     responses:
-     OrderDetail:
-       type: object
-       properties:
-         id_order_detail:
-           type: integer
-         id_order:
-           type: integer
-         id_product:
-           type: integer
-         qty:
-           type: integer
-         created_at:
-           type: string
-           format: date-time
-         updated_at:
-           type: string
-           format: date-time
+ *       OrderDetail:
+ *         type: object
+ *         properties:
+ *           id_order_detail:
+ *             type: integer
+ *           id_order:
+ *             type: integer
+ *           id_product:
+ *             type: integer
+ *           qty:
+ *             type: integer
+ *           created_at:
+ *             type: string
+ *             format: date-time
+ *           updated_at:
+ *             type: string
+ *             format: date-time
  *       200:
  *         description: List of products
  *         content:
@@ -613,6 +613,75 @@ router.get('/order-by-phone', botAuth, async (req, res) => {
     const orderDetails = await models.OrderDetail.findAll({ where: { id_order: order.id_order } });
     // Return data directly as requested
     return res.status(200).json({ order, order_details: orderDetails });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /api/bot/order:
+ *   delete:
+ *     summary: Delete pending order(s) by customer phone (bot)
+ *     tags: [Bot]
+ *     security:
+ *       - ApiKeyAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: no_hp
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Nomor HP customer
+ *     responses:
+ *       200:
+ *         description: Orders deleted
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 deletedOrders:
+ *                   type: integer
+ *                 message:
+ *                   type: string
+ *       400:
+ *         description: no_hp wajib diisi
+ *       404:
+ *         description: Customer atau order tidak ditemukan
+ */
+router.delete('/order', botAuth, async (req, res) => {
+  const { no_hp } = req.query;
+  if (!no_hp) return res.status(400).json({ error: 'no_hp wajib diisi' });
+  const sequelize = models.sequelize || (models.Order && models.Order.sequelize);
+  try {
+    const customer = await models.Customer.findOne({ where: { no_hp } });
+    if (!customer) return res.status(404).json({ error: 'Customer tidak ditemukan' });
+
+    // Find pending orders for this customer
+    const pendingOrders = await models.Order.findAll({ where: { id_customer: customer.id_customer, status_bot: 'pending' } });
+    if (!pendingOrders || pendingOrders.length === 0) return res.status(404).json({ error: 'Order tidak ditemukan' });
+
+    // Transactionally delete order details, payments and orders
+    await sequelize.transaction(async (t) => {
+      const orderIds = pendingOrders.map(o => o.id_order);
+      // Delete OrderDetails
+      await models.OrderDetail.destroy({ where: { id_order: orderIds }, transaction: t });
+      // Delete Payments (by id_order or no_transaksi if stored that way)
+      if (models.Payment) {
+        // prefer id_order if exists
+        await models.Payment.destroy({ where: { id_order: orderIds }, transaction: t });
+        // also try deleting by no_transaksi values present on orders
+        const noTrans = pendingOrders.map(o => o.no_transaksi).filter(Boolean);
+        if (noTrans.length > 0) {
+          await models.Payment.destroy({ where: { no_transaksi: noTrans }, transaction: t });
+        }
+      }
+      // Delete Orders
+      await models.Order.destroy({ where: { id_order: orderIds }, transaction: t });
+    });
+
+    res.status(200).json({ deletedOrders: pendingOrders.length, message: 'Pending order(s) deleted' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
