@@ -87,6 +87,23 @@ router.post('/payment', botAuth, async (req, res) => {
  *     security:
  *       - ApiKeyAuth: []
  *     responses:
+     OrderDetail:
+       type: object
+       properties:
+         id_order_detail:
+           type: integer
+         id_order:
+           type: integer
+         id_product:
+           type: integer
+         qty:
+           type: integer
+         created_at:
+           type: string
+           format: date-time
+         updated_at:
+           type: string
+           format: date-time
  *       200:
  *         description: List of products
  *         content:
@@ -565,11 +582,18 @@ router.post('/order-detail', botAuth, async (req, res) => {
  *         content:
  *           application/json:
  *             schema:
- *               $ref: '#/components/schemas/Order'
+ *               type: object
+ *               properties:
+ *                 order:
+ *                   $ref: '#/components/schemas/Order'
+ *                 order_details:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/OrderDetail'
  *       400:
  *         description: no_hp wajib diisi
  *       404:
- *         description: Order tidak ditemukan
+ *         description: Order tidak ada
  */
 router.get('/order-by-phone', botAuth, async (req, res) => {
   try {
