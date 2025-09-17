@@ -243,16 +243,16 @@ module.exports.botAuth = botAuth;
 router.get('/customer', botAuth, async (req, res) => {
   const { no_hp } = req.query;
   if (!no_hp) {
-    return res.status(400).json({ success: false, message: 'no_hp wajib diisi' });
+    return res.status(400).json({ error: 'no_hp wajib diisi' });
   }
   try {
     const customer = await models.Customer.findOne({ where: { no_hp } });
     if (!customer) {
-      return res.status(404).json({ success: false, message: 'Customer tidak ditemukan' });
+      return res.status(404).json({ error: 'Customer tidak ditemukan' });
     }
     return res.status(200).json(customer);
   } catch (err) {
-    return res.status(500).json({ success: false, message: 'Terjadi kesalahan server' });
+    return res.status(500).json({ error: 'Terjadi kesalahan server' });
   }
 });
 /**
@@ -584,10 +584,10 @@ router.get('/order-by-phone', botAuth, async (req, res) => {
       }
     });
     if (!order) {
-      return res.json({ order: null, order_details: [] });
+      return res.status(404).json({ error: 'Order tidak ada' });
     }
-  const orderDetails = await models.OrderDetail.findAll({ where: { id_order: order.id_order } });
-    res.json({ order, order_details: orderDetails });
+    const orderDetails = await models.OrderDetail.findAll({ where: { id_order: order.id_order } });
+    return res.status(200).json({ success: true, order, order_details: orderDetails });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
