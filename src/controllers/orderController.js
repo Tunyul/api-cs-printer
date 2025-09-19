@@ -414,35 +414,40 @@ exports.updateOrder = async (req, res) => {
 
 // Fungsi untuk menghapus order
 exports.deleteOrder = async (req, res) => {
-  const transaction = await models.sequelize.transaction();
+  const id = parseInt(req.params.id, 10);
+  const force = req.query.force === '1' || req.query.force === 'true';
+  const reason = req.body && req.body.reason ? req.body.reason : null;
+  const user = req.user && req.user.username ? req.user.username : 'system';
+
+  const t = await models.sequelize.transaction();
   try {
-    // Hapus order details dulu
-    await models.OrderDetail.destroy({
-      where: { id_order: req.params.id },
-      transaction
-    });
-    
-    // Hapus piutang terkait
-    await models.Piutang.destroy({
-      where: { id_order: req.params.id },
-      transaction
-    });
-    
-    // Hapus order
-    const deleted = await models.Order.destroy({
-      where: { id_order: req.params.id },
-      transaction
-    });
-    
-    if (deleted) {
-      await transaction.commit();
-  res.status(200).json({ message: 'Order deleted successfully' });
-    } else {
-      res.status(404).json({ error: 'Order not found' });
-    }
-  } catch (error) {
-    await transaction.rollback();
-    res.status(500).json({ error: error.message });
+    const order = await models.Order.findByPk(id, { transaction: t });
+    if (!order) { await t.rollback(); return res.status(404).json({ success:false, message: 'Order not found' }); }
+
+    const payments = await models.Payment.findAll({ where: { no_transaksi: order.no_transaksi }, transaction: t });
+    const hasVerified = payments.some(p => ['verified','confirmed'].includes(p.status));
+    if (hasVerified && !force) { await t.rollback(); return res.status(400).json({ success:false, message: 'Order has verified payments. Use ?force=1 and supply reason to proceed.' }); }
+    if (hasVerified && force && !reason) { await t.rollback(); return res.status(400).json({ success:false, message: 'Reason is required for forced deletes' }); }
+
+    // snapshot
+    const orderDetails = await models.OrderDetail.findAll({ where: { id_order: id }, transaction: t });
+    const piutangs = await models.Piutang.findAll({ where: { id_order: id }, transaction: t });
+    const snapshot = { order: order.toJSON(), orderDetails: orderDetails.map(d=>d.toJSON()), payments: payments.map(p=>p.toJSON()), piutangs: piutangs.map(q=>q.toJSON()) };
+
+    // save audit
+    await models.OrderDeletionAudit.create({ id_order: id, deleted_by: user, reason, snapshot_json: JSON.stringify(snapshot), created_at: new Date() }, { transaction: t });
+
+    // delete related
+    await models.OrderDetail.destroy({ where: { id_order: id }, transaction: t });
+    await models.Payment.destroy({ where: { no_transaksi: order.no_transaksi }, transaction: t });
+    await models.Piutang.destroy({ where: { id_order: id }, transaction: t });
+    await order.destroy({ transaction: t });
+
+    await t.commit();
+    return res.json({ success:true, message: 'Order and related data deleted', audit_for_order: id });
+  } catch (err) {
+    await t.rollback();
+    return res.status(500).json({ success:false, message: err.message });
   }
 };
 

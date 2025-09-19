@@ -5,6 +5,7 @@ module.exports = (sequelize, DataTypes) => {
   class Piutang extends Model {
     static associate(models) {
       Piutang.belongsTo(models.Customer, { foreignKey: 'id_customer' });
+      Piutang.belongsTo(models.Order, { foreignKey: 'id_order' });
     }
   }
 
@@ -38,6 +39,10 @@ module.exports = (sequelize, DataTypes) => {
     },
     keterangan: {
       type: DataTypes.TEXT,
+      allowNull: true
+    },
+    id_order: {
+      type: DataTypes.INTEGER,
       allowNull: true
     },
     created_at: {

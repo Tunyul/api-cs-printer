@@ -26,6 +26,7 @@ const order = require('./order')(sequelize, Sequelize.DataTypes);
 const orderDetail = require('./orderDetail')(sequelize, Sequelize.DataTypes);
 const piutang = require('./piutang')(sequelize, Sequelize.DataTypes);
 const payment = require('./payment')(sequelize, Sequelize.DataTypes);
+const orderDeletionAudit = require('./orderDeletionAudit')(sequelize, Sequelize.DataTypes);
 const user = require('./user')(sequelize);
 
 db.Customer = customer;
@@ -34,6 +35,7 @@ db.Order = order;
 db.OrderDetail = orderDetail;
 db.Piutang = piutang;
 db.Payment = payment;
+db.OrderDeletionAudit = orderDeletionAudit;
 db.User = user;
 
 Object.keys(db).forEach(modelName => {
