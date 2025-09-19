@@ -1,0 +1,11 @@
+node_modules/
+/.env
+*.log
+dist/
+coverage/
+npm-debug.log*
+package-lock.json
+
+# Ignore local scripts and test folders per request
+/scripts/
+/test/
