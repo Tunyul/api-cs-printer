@@ -5,11 +5,10 @@ class PiutangController {
   // Get all piutangs
   static async getAllPiutangs(req, res) {
     try {
-      const { page = 1, limit = 10, search = '', status = '' } = req.query;
-      const offset = (page - 1) * limit;
+      const { search = '', status = '' } = req.query;
 
       let whereClause = {};
-      
+
       if (search) {
         whereClause = {
           [Op.or]: [
@@ -18,25 +17,26 @@ class PiutangController {
           ]
         };
       }
-      
+
       if (status && status !== 'all') {
         whereClause.status = status;
       }
 
-      const { count, rows: piutangs } = await Piutang.findAndCountAll({
+      // Always return all piutangs (no pagination)
+      const piutangs = await Piutang.findAll({
         attributes: ['id_piutang', 'id_customer', 'jumlah_piutang', 'tanggal_piutang', 'status', 'keterangan', 'created_at', 'updated_at'],
         include: [{
           model: Customer,
           attributes: ['id_customer', 'nama', 'no_hp']
         }],
         where: whereClause,
-        limit: parseInt(limit),
-        offset: parseInt(offset),
         order: [['created_at', 'DESC']]
       });
-      res.status(200).json({
+
+      return res.status(200).json({
         success: true,
-        data: piutangs
+        data: piutangs,
+        meta: { total: piutangs.length }
       });
     } catch (error) {
       res.status(500).json({

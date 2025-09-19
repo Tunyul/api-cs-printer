@@ -12,6 +12,10 @@ module.exports = (sequelize) => {
   }
 
   OrderDetail.init({
+    id_order: {
+      type: DataTypes.INTEGER,
+      allowNull: false
+    },
     id: {
       type: DataTypes.INTEGER,
       primaryKey: true,

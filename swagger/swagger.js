@@ -128,6 +128,36 @@ const options = {
             updated_at: { type: 'string', format: 'date-time' }
           }
         },
+        Payment: {
+          type: 'object',
+          properties: {
+            id_payment: { type: 'integer' },
+            nominal: { type: 'number', format: 'decimal' },
+            tanggal: { type: 'string', format: 'date-time' },
+            bukti: { type: 'string' },
+            tipe: { type: 'string', enum: ['dp','pelunasan'] },
+            no_transaksi: { type: 'string' },
+            no_hp: { type: 'string' },
+            status: { type: 'string' },
+            created_at: { type: 'string', format: 'date-time' },
+            updated_at: { type: 'string', format: 'date-time' }
+          }
+        },
+        PaymentCreate: {
+          type: 'object',
+          description: 'Request body for creating payments. Supported flows: (1) full create with id_order+nominal+tipe, (2) no_hp+bukti (server links to pending order), (3) no_transaksi+bukti',
+          properties: {
+            id_order: { type: 'integer' },
+            id_customer: { type: 'integer' },
+            nominal: { type: 'number', format: 'decimal' },
+            tipe: { type: 'string', enum: ['dp','pelunasan'] },
+            bukti: { type: 'string' },
+            no_hp: { type: 'string' },
+            no_transaksi: { type: 'string' },
+            status: { type: 'string' },
+            tanggal: { type: 'string' }
+          }
+        },
         Piutang: {
           type: 'object',
           properties: {

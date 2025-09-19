@@ -70,6 +70,31 @@ router.post('/', customerController.createCustomer);
 /**
  * @swagger
  * /api/customers/{id}:
+ *   get:
+ *     summary: Get customer by ID
+ *     tags: [Customer]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: Customer ID
+ *     responses:
+ *       200:
+ *         description: Customer object
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Customer'
+ *       404:
+ *         description: Customer not found
+ */
+router.get('/:id', customerController.getCustomerById);
+
+/**
+ * @swagger
+ * /api/customers/{id}:
  *   put:
  *     summary: Update customer by ID
  *     tags: [Customer]

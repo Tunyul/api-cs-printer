@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const models = require('../models');
+const { computeOrderDetailPrice } = require('../utils/priceCalculator');
 /**
  * @swagger
  * /api/bot/payment:
@@ -48,23 +49,45 @@ router.post('/payment', botAuth, async (req, res) => {
       return res.status(404).json({ error: 'Order tidak ditemukan' });
     }
     let payment = await models.Payment.findOne({ where: { no_transaksi } });
-  const nominal = order.nominal || 0;
-  const tipe = order.tipe === 'dp' || order.tipe === 'pelunasan' ? order.tipe : 'dp';
-    if (payment) {
-      await payment.update({ bukti: link_bukti, no_hp, nominal, tipe, updated_at: new Date() });
-      return res.status(200).json(payment);
-    }
-    payment = await models.Payment.create({
-      id_order: order.id_order,
-      no_transaksi,
-      bukti: link_bukti,
-      no_hp,
-      nominal,
-      tipe,
-      status: 'pending'
+
+  // Policy: bot/client MUST NOT set nominal/tipe. Ignore any provided values and
+  // always create/update payments with nominal=0 and tipe='dp' so admin verifies.
+  const nominal = 0;
+  const tipe = 'dp';
+
+    // perform create/update inside a transaction and ensure piutang/order sync
+    const paymentController = require('../controllers/paymentController');
+    const sequelize = models.sequelize || (models.Order && models.Order.sequelize);
+    const resPayment = await sequelize.transaction(async (t) => {
+      if (payment) {
+        // When bot submits bukti again, mark payment to await admin verification
+        await payment.update({ bukti: link_bukti, no_hp, nominal, tipe, status: 'menunggu_verifikasi', updated_at: new Date() }, { transaction: t });
+        const updated = await models.Payment.findByPk(payment.id_payment, { transaction: t });
+        // ensure piutang exists and sync effects inside transaction
+        await paymentController.ensurePiutangForCustomer(updated.id_customer || (updated.Order && updated.Order.id_customer), t);
+        await paymentController.syncPaymentEffects(updated, t);
+        return updated;
+      }
+
+      const created = await models.Payment.create({
+        id_order: order.id_order,
+        no_transaksi,
+        bukti: link_bukti,
+        no_hp,
+        nominal,
+        tipe,
+        status: 'menunggu_verifikasi',
+        created_at: new Date(),
+        updated_at: new Date()
+      }, { transaction: t });
+      const reloaded = await models.Payment.findByPk(created.id_payment, { transaction: t });
+      // ensure piutang exists and sync effects inside transaction
+      await paymentController.ensurePiutangForCustomer(reloaded.id_customer || (reloaded.Order && reloaded.Order.id_customer), t);
+      await paymentController.syncPaymentEffects(reloaded, t);
+      return reloaded;
     });
-    const paymentReloaded = await models.Payment.findByPk(payment.id_payment);
-    const result = paymentReloaded.toJSON();
+
+    const result = resPayment.toJSON ? resPayment.toJSON() : resPayment;
     if (result.tanggal instanceof Date) {
       result.tanggal = result.tanggal.toISOString().slice(0, 19).replace('T', ' ');
     } else if (typeof result.tanggal === 'string') {
@@ -73,7 +96,7 @@ router.post('/payment', botAuth, async (req, res) => {
         result.tanggal = d.toISOString().slice(0, 19).replace('T', ' ');
       }
     }
-    res.status(201).json(result);
+    res.status(payment ? 200 : 201).json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -552,10 +575,72 @@ router.post('/order-detail', botAuth, async (req, res) => {
     if (!no_transaksi || !order_details || !Array.isArray(order_details)) return res.status(400).json({ error: 'no_transaksi dan order_details wajib diisi' });
     const order = await models.Order.findOne({ where: { no_transaksi } });
     if (!order) return res.status(404).json({ error: 'Order tidak ditemukan' });
+    // Create order details with correct field names and update order totals
+    let addedTotal = 0;
     for (const detail of order_details) {
-      await models.OrderDetail.create({ id_order: order.id_order, id_product: detail.id_product, qty: detail.qty });
+      if (!detail.id_product || !detail.qty) return res.status(400).json({ error: 'id_product dan qty wajib diisi untuk setiap order detail' });
+      const product = await models.Product.findByPk(detail.id_product);
+      if (!product) return res.status(404).json({ error: `Product ${detail.id_product} not found` });
+      const qty = Number(detail.qty || 1);
+
+      // parse dimension info: accept detail.dimension {w,h,unit}, or detail.size as '3x3m', or detail.width/detail.height
+      function parseDimension(d) {
+        if (!d) return null;
+        if (typeof d === 'object' && d.w != null && d.h != null) return { w: Number(d.w), h: Number(d.h), unit: d.unit || 'm' };
+        if (typeof d === 'string') {
+          // try format like '3x3m' or '300x300cm'
+          const m = d.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)(m|cm)?$/);
+          if (m) return { w: Number(m[1]), h: Number(m[2]), unit: m[3] || 'm' };
+        }
+        // width/height fields
+        if (d.width != null && d.height != null) return { w: Number(d.width), h: Number(d.height), unit: d.unit || 'm' };
+        return null;
+      }
+
+      let harga_satuan = 0;
+      let subtotal_item = 0;
+
+      const hargaPerPcs = Number(product.harga_per_pcs || 0);
+      const hargaPerM2 = Number(product.harga_per_m2 || 0);
+      // parse dimension source
+      const dimSource = detail.dimension || detail.size || { width: detail.width, height: detail.height, unit: detail.unit };
+      const parsed = parseDimension(dimSource);
+
+      // Priority:
+      // 1) If dimension is provided and harga_per_m2 exists -> use m2 pricing
+      // 2) Else if harga_per_pcs exists -> use per-pcs pricing
+      // 3) Else if harga_per_m2 exists -> fallback to m2 pricing (use product unit_area)
+      if (parsed && hargaPerM2 > 0) {
+        const computeRes = computeOrderDetailPrice(product, { dimension: parsed }, qty);
+        harga_satuan = computeRes.harga_satuan;
+        subtotal_item = computeRes.subtotal_item;
+      } else if (hargaPerPcs > 0) {
+        harga_satuan = hargaPerPcs;
+        subtotal_item = hargaPerPcs * qty;
+      } else if (hargaPerM2 > 0) {
+        const computeRes = computeOrderDetailPrice(product, { dimension: null }, qty);
+        harga_satuan = computeRes.harga_satuan;
+        subtotal_item = computeRes.subtotal_item;
+      } else {
+        harga_satuan = 0;
+        subtotal_item = 0;
+      }
+      addedTotal += subtotal_item;
+      await models.OrderDetail.create({
+        id_order: order.id_order,
+        id_produk: detail.id_product,
+        quantity: qty,
+        harga_satuan,
+        subtotal_item
+      });
     }
-    res.json({ success: true, message: 'Order detail ditambahkan' });
+    // Update order totals
+    const newTotalBayar = Number(order.total_bayar || 0) + addedTotal;
+    const newTotalHarga = Number(order.total_harga || 0) + addedTotal;
+    await order.update({ total_bayar: newTotalBayar, total_harga: newTotalHarga });
+    // Return the order details for the order
+    const orderDetails = await models.OrderDetail.findAll({ where: { id_order: order.id_order }, include: [models.Product] });
+    res.json(orderDetails);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -599,20 +684,69 @@ router.get('/order-by-phone', botAuth, async (req, res) => {
   try {
     const { no_hp } = req.query;
     if (!no_hp) return res.status(400).json({ error: 'no_hp wajib diisi' });
-    const customer = await models.Customer.findOne({ where: { no_hp } });
-    if (!customer) return res.status(404).json({ error: 'Customer tidak ditemukan' });
-    const order = await models.Order.findOne({
-      where: {
-        id_customer: customer.id_customer,
-        status_bot: 'pending'
+    // Try to find a customer by phone. If not found, fall back to searching
+    // orders via payments that include this phone number so the bot can check
+    // orders by phone even when a Customer record doesn't exist.
+    let customer = await models.Customer.findOne({ where: { no_hp } });
+    let order = null;
+
+    if (customer) {
+      order = await models.Order.findOne({ where: { id_customer: customer.id_customer, status_bot: 'pending' } });
+    } else {
+      // No customer found — look for payments that reference this phone and derive order numbers
+      const payments = models.Payment ? await models.Payment.findAll({ where: { no_hp }, attributes: ['no_transaksi'] }) : [];
+      const orderNos = payments.map(p => p.no_transaksi).filter(Boolean);
+      if (orderNos.length > 0) {
+        // find any pending order that matches one of these transaction numbers
+        order = await models.Order.findOne({ where: { no_transaksi: orderNos, status_bot: 'pending' } });
       }
-    });
+    }
+
     if (!order) {
       return res.status(404).json({ error: 'Order tidak ada' });
     }
     const orderDetails = await models.OrderDetail.findAll({ where: { id_order: order.id_order } });
     // Return data directly as requested
     return res.status(200).json({ order, order_details: orderDetails });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /api/bot/order-by-transaksi:
+ *   get:
+ *     summary: Get order by no_transaksi (bot)
+ *     tags: [Bot]
+ *     security:
+ *       - ApiKeyAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: no_transaksi
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Nomor transaksi order
+ *     responses:
+ *       200:
+ *         description: Order found
+ *       400:
+ *         description: no_transaksi wajib diisi
+ *       404:
+ *         description: Order tidak ditemukan
+ */
+router.get('/order-by-transaksi', botAuth, async (req, res) => {
+  try {
+    const { no_transaksi } = req.query;
+    if (!no_transaksi) return res.status(400).json({ error: 'no_transaksi wajib diisi' });
+    const order = await models.Order.findOne({ where: { no_transaksi } });
+    if (!order) return res.status(404).json({ error: 'Order tidak ditemukan' });
+
+    const orderDetails = await models.OrderDetail.findAll({ where: { id_order: order.id_order }, include: [models.Product] });
+    const payments = models.Payment ? await models.Payment.findAll({ where: { no_transaksi } }) : [];
+
+    return res.status(200).json({ order, order_details: orderDetails, payments });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -821,13 +955,29 @@ router.put('/order-detail/update', botAuth, async (req, res) => {
     if (!no_transaksi || !order_details || !Array.isArray(order_details)) return res.status(400).json({ error: 'no_transaksi dan order_details wajib diisi' });
     const order = await models.Order.findOne({ where: { no_transaksi } });
     if (!order) return res.status(404).json({ error: 'Order tidak ditemukan' });
+    // Replace all existing order details with the provided array
+    if (!Array.isArray(order_details) || order_details.length === 0) return res.status(400).json({ error: 'order_details array wajib diisi' });
+    // Remove existing details
+    await models.OrderDetail.destroy({ where: { id_order: order.id_order } });
+
+    // Create new details and compute totals
+    let total_bayar = 0;
     for (const detail of order_details) {
-      await models.OrderDetail.update(
-        { qty: detail.qty },
-        { where: { id_order: order.id_order, id_product: detail.id_product } }
-      );
+      if (!detail.id_product || typeof detail.qty !== 'number') return res.status(400).json({ error: 'id_product dan qty wajib diisi dan qty harus number' });
+      const product = await models.Product.findByPk(detail.id_product);
+      if (!product) return res.status(404).json({ error: `Product ${detail.id_product} not found` });
+      const harga = Number(product.harga_per_pcs || 0);
+      const qty = Number(detail.qty);
+      const subtotal_item = harga * qty;
+      total_bayar += subtotal_item;
+      await models.OrderDetail.create({ id_order: order.id_order, id_produk: detail.id_product, quantity: qty, harga_satuan: harga, subtotal_item });
     }
-    res.json({ success: true, message: 'Order details updated' });
+
+    // Update order totals
+    await order.update({ total_bayar, total_harga: total_bayar });
+    // Return updated order with details
+    const updatedOrder = await models.Order.findByPk(order.id_order, { include: [{ model: models.OrderDetail, include: [models.Product] }] });
+    res.json(updatedOrder);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

@@ -87,7 +87,7 @@ function generateDefaultLinks(transactionNumber) {
 async function calculateTotalBayar(orderId) {
   try {
     const orderDetails = await models.OrderDetail.findAll({
-      where: { order_id: orderId }
+      where: { id_order: orderId }
     });
     
     let totalBayar = 0;
@@ -251,7 +251,8 @@ exports.createOrder = async (req, res) => {
         orderDetailData.push({
           quantity,
           harga_satuan: harga,
-          subtotal_item
+          subtotal_item,
+          id_product: item.id_product || item.id_produk
         });
       }
 
@@ -277,9 +278,9 @@ exports.createOrder = async (req, res) => {
       order = await models.Order.create(orderData, { transaction });
       isNewOrder = true;
 
-      // Buat order details
+      // Buat order details (gunakan field id_order dan id_produk sesuai model)
       for (const detail of orderDetailData) {
-        await models.OrderDetail.create({ ...detail, order_id: order.id_order }, { transaction });
+        await models.OrderDetail.create({ ...detail, id_order: order.id_order, id_produk: detail.id_product || detail.id_produk }, { transaction });
       }
     } else {
       // Tambahkan produk ke order detail yang sudah ada
@@ -295,7 +296,8 @@ exports.createOrder = async (req, res) => {
           quantity,
           harga_satuan: harga,
           subtotal_item,
-          order_id: order.id_order
+          id_order: order.id_order,
+          id_produk: item.id_product || item.id_produk
         }, { transaction });
       }
       // Update total_bayar di order
@@ -368,7 +370,7 @@ exports.updateOrder = async (req, res) => {
       // Hapus detail lama jika ada orderDetails baru
       if (orderDetails && Array.isArray(orderDetails)) {
         await models.OrderDetail.destroy({
-          where: { order_id: req.params.id },
+          where: { id_order: req.params.id },
           transaction
         });
         
@@ -376,7 +378,8 @@ exports.updateOrder = async (req, res) => {
         const orderDetailPromises = orderDetails.map(detail => {
           return models.OrderDetail.create({
             ...detail,
-            order_id: req.params.id
+            id_order: req.params.id,
+            id_produk: detail.id_product || detail.id_produk
           }, { transaction });
         });
         
@@ -415,7 +418,7 @@ exports.deleteOrder = async (req, res) => {
   try {
     // Hapus order details dulu
     await models.OrderDetail.destroy({
-      where: { order_id: req.params.id },
+      where: { id_order: req.params.id },
       transaction
     });
     
@@ -447,7 +450,7 @@ exports.deleteOrder = async (req, res) => {
 exports.getOrderDetailsByOrderId = async (req, res) => {
   try {
     const orderDetails = await models.OrderDetail.findAll({
-      where: { order_id: req.params.id },
+      where: { id_order: req.params.id },
       include: [models.Product]
     });
     if (!orderDetails || orderDetails.length === 0) {
@@ -634,7 +637,7 @@ exports.getTransactionTotal = async (req, res) => {
     let totalBayarFromDetails = 0;
     for (const order of orders) {
       const orderDetails = await models.OrderDetail.findAll({
-        where: { order_id: order.id_order }
+        where: { id_order: order.id_order }
       });
       
       orderDetails.forEach(detail => {
@@ -698,14 +701,14 @@ exports.addOrderDetailByNoTransaksi = async (req, res) => {
     if (!order_details || !Array.isArray(order_details) || order_details.length === 0) {
       return res.status(400).json({ error: 'order_details array required' });
     }
-    // Tambahkan order detail satu per satu
+    // Tambahkan order detail satu per satu (gunakan id_order dan id_produk)
     for (const item of order_details) {
-      if (!item.id_product || !item.qty) {
+      if ((!item.id_product && !item.id_produk) || !item.qty) {
         return res.status(400).json({ error: 'id_product and qty required for each order detail' });
       }
       await models.OrderDetail.create({
-        order_id: order.id_order,
-        id_product: item.id_product,
+        id_order: order.id_order,
+        id_produk: item.id_product || item.id_produk,
         quantity: item.qty
       });
     }

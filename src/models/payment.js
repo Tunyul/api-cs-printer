@@ -28,6 +28,11 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.DECIMAL(15,2),
       allowNull: false
     },
+    status: {
+      type: DataTypes.ENUM('pending','menunggu_verifikasi','verified','confirmed'),
+      allowNull: true,
+      defaultValue: 'pending'
+    },
     tanggal: {
       type: DataTypes.DATE,
       allowNull: false,
