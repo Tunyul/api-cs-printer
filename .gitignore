@@ -9,3 +9,4 @@ package-lock.json
 # Ignore local scripts and test folders per request
 /scripts/
 /test/
+/migrations/
