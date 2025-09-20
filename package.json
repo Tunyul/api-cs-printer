@@ -21,6 +21,7 @@
     "pdfkit": "^0.13.0",
     "puppeteer": "^21.3.8",
     "sequelize": "^6.32.1",
+    "socket.io": "^4.8.1",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.0"
   },

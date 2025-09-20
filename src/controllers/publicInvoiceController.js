@@ -133,6 +133,22 @@ async function postNotifyWebhook(req, res) {
 
     if (!result) return res.status(502).json({ error: 'Failed to notify webhook', detail: lastError ? lastError.message : null });
 
+    // Emit realtime event to customer if Socket.IO available
+    try {
+      const io = req.app.get('io');
+      if (io && data.order && data.order.id_customer) {
+        io.to(`user:${data.order.id_customer}`).emit('invoice.notify', {
+          no_transaksi: data.order.no_transaksi,
+          invoice_url: payload.invoice_url,
+          status: 'sent',
+          timestamp: new Date().toISOString()
+        });
+      }
+    } catch (e) {
+      // non-fatal - just log
+      console.error('Error emitting realtime notify', e);
+    }
+
     return res.status(200).json({ success: true, status: result.status, data: result.data });
   } catch (err) {
     console.error('Error in notify webhook', err);
