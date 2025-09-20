@@ -303,6 +303,25 @@ exports.createOrder = async (req, res) => {
       include: [{ model: models.OrderDetail, include: [models.Product] }]
     });
 
+    // Emit order.created when a new order is created
+    try {
+      const io = req.app.get('io');
+      if (io && order) {
+        const payload = { id_order: order.id_order, no_transaksi: order.no_transaksi, id_customer: order.id_customer, total_bayar: Number(order.total_bayar || 0), status_bot: order.status_bot, timestamp: new Date().toISOString() };
+        io.to(`user:${order.id_customer}`).emit('order.created', payload);
+        io.to('role:admin').emit('order.created', payload);
+        // persist notification
+        try {
+          const Notification = req.app.get('models').Notification;
+          const now = new Date();
+          Notification.create({ recipient_type: 'user', recipient_id: String(order.id_customer), title: 'Order created', body: JSON.stringify(payload), data: payload, read: false, created_at: now, updated_at: now }).catch(()=>{});
+          Notification.create({ recipient_type: 'role', recipient_id: 'admin', title: 'Order created', body: JSON.stringify(payload), data: payload, read: false, created_at: now, updated_at: now }).catch(()=>{});
+        } catch (e) {}
+      }
+    } catch (e) {
+      console.error('emit order.created error', e && e.message ? e.message : e);
+    }
+
     // Jika header bot = true, respon custom
     if (req.headers['bot'] === 'true') {
       // Ambil nama produk untuk setiap order detail dari request
@@ -380,6 +399,24 @@ exports.updateOrder = async (req, res) => {
       });
       
       await transaction.commit();
+      // emit order.updated
+      try {
+        const io = req.app.get('io');
+        if (io && updatedOrder) {
+          const payload = { id_order: updatedOrder.id_order, no_transaksi: updatedOrder.no_transaksi, id_customer: updatedOrder.id_customer, total_bayar: Number(updatedOrder.total_bayar || 0), timestamp: new Date().toISOString() };
+          io.to(`user:${updatedOrder.id_customer}`).emit('order.updated', payload);
+          io.to('role:admin').emit('order.updated', payload);
+          // persist notification
+          try {
+            const Notification = req.app.get('models').Notification;
+            const now = new Date();
+            Notification.create({ recipient_type: 'user', recipient_id: String(updatedOrder.id_customer), title: 'Order updated', body: JSON.stringify(payload), data: payload, read: false, created_at: now, updated_at: now }).catch(()=>{});
+            Notification.create({ recipient_type: 'role', recipient_id: 'admin', title: 'Order updated', body: JSON.stringify(payload), data: payload, read: false, created_at: now, updated_at: now }).catch(()=>{});
+          } catch (e) {}
+        }
+      } catch (e) {
+        console.error('emit order.updated error', e && e.message ? e.message : e);
+      }
   res.status(200).json(updatedOrder);
     } else {
       res.status(404).json({ error: 'Order not found' });

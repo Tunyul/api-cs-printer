@@ -17,8 +17,7 @@ module.exports = (sequelize, DataTypes) => {
     },
     token: {
       type: DataTypes.STRING(128),
-      allowNull: false,
-      unique: true
+      allowNull: false
     },
     no_transaksi: {
       type: DataTypes.STRING,

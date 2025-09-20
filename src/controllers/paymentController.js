@@ -1,6 +1,113 @@
 
 const models = require('../models');
 const { Op } = require('sequelize');
+const axios = require('axios');
+const fs = require('fs');
+
+// Helper to emit payment events to customer and admin rooms
+function emitPaymentEvent(app, payment, event = 'payment.updated') {
+  try {
+    if (!app || !payment) return;
+    const io = app.get('io');
+    if (!io) return;
+    const customerId = payment.id_customer || (payment.Order && payment.Order.id_customer) || (payment.Customer && payment.Customer.id_customer) || null;
+    const payload = {
+      id_payment: payment.id_payment || payment.id,
+      no_transaksi: payment.no_transaksi || (payment.Order && payment.Order.no_transaksi) || null,
+      nominal: Number(payment.nominal || 0),
+      status: payment.status || null,
+      timestamp: new Date().toISOString()
+    };
+    if (customerId) io.to(`user:${customerId}`).emit(event, payload);
+    // also notify admins
+    io.to('role:admin').emit(event, payload);
+    // persist notifications
+    try {
+      const Notification = require('../models').Notification;
+      const now = new Date();
+      if (customerId) {
+        Notification.create({ recipient_type: 'user', recipient_id: String(customerId), title: `Payment ${event}`, body: JSON.stringify(payload), data: payload, read: false, created_at: now, updated_at: now }).catch(e=>console.error('notif create user error', e && e.message));
+      }
+      // admin notification
+      Notification.create({ recipient_type: 'role', recipient_id: 'admin', title: `Payment ${event}`, body: JSON.stringify(payload), data: payload, read: false, created_at: now, updated_at: now }).catch(e=>console.error('notif create admin error', e && e.message));
+    } catch (e) {
+      console.error('persist notification error', e && e.message ? e.message : e);
+    }
+  } catch (err) {
+    console.error('emitPaymentEvent error', err && err.message ? err.message : err);
+  }
+}
+
+// Send invoice webhook to configured INVOICE_WEBHOOK_URL (with Basic Auth)
+async function sendInvoiceWebhook(app, no_transaksi) {
+  try {
+    if (!no_transaksi) return false;
+    const modelsLocal = app.get('models') || require('../models');
+    const order = await modelsLocal.Order.findOne({ where: { no_transaksi }, include: [{ model: modelsLocal.OrderDetail, include: [modelsLocal.Product] }, modelsLocal.Customer] });
+    if (!order) return false;
+    const payments = await modelsLocal.Payment.findAll({ where: { no_transaksi } });
+    const customer = order.Customer || await modelsLocal.Customer.findOne({ where: { id_customer: order.id_customer } });
+
+    const custPhone = customer && customer.no_hp ? String(customer.no_hp) : '';
+    // Minimal payload expected by FE/n8n: only phone and invoice_url
+    const payload = {
+      phone: custPhone,
+      invoice_url: `${process.env.APP_URL || `http://localhost:3000`}/invoice/${order.no_transaksi}.pdf`
+    };
+
+    const webhookUrl = process.env.INVOICE_WEBHOOK_URL;
+    if (!webhookUrl) return false;
+
+    const authUser = process.env.INVOICE_WEBHOOK_USER || 'inin';
+    const authPass = process.env.INVOICE_WEBHOOK_PASS || '1234';
+    const authHeader = { auth: { username: authUser, password: authPass } };
+
+  // log minimal payload for debugging
+  try { fs.appendFileSync('server.log', `[${new Date().toISOString()}] webhook-payload ${no_transaksi} ` + JSON.stringify(payload) + "\n"); } catch(e){}
+  const maxRetries = 3;
+    let attempt = 0;
+    let lastError = null;
+    let result = null;
+    while (attempt < maxRetries) {
+      try {
+        attempt++;
+        result = await axios.post(webhookUrl, payload, { timeout: 5000, ...authHeader });
+        const logLine = `[${new Date().toISOString()}] notify ${no_transaksi} attempt=${attempt} status=${result.status}\n`;
+        try { fs.appendFileSync('server.log', logLine); } catch (e) {}
+        break;
+      } catch (err) {
+        lastError = err;
+        const logLine = `[${new Date().toISOString()}] notify ${no_transaksi} attempt=${attempt} error=${err.message}\n`;
+        try { fs.appendFileSync('server.log', logLine); } catch (e) {}
+        if (err.response && err.response.status >= 400 && err.response.status < 500) break;
+        await new Promise(r => setTimeout(r, attempt * 500));
+      }
+    }
+
+    if (!result) return false;
+
+    // emit realtime invoice.notify and persist Notification rows
+    try {
+      const io = app.get('io');
+      if (io && order && order.id_customer) {
+        const notifyPayload = { no_transaksi: order.no_transaksi, invoice_url: payload.invoice_url, status: 'sent', timestamp: new Date().toISOString() };
+        io.to(`user:${order.id_customer}`).emit('invoice.notify', notifyPayload);
+        io.to('role:admin').emit('invoice.notify', notifyPayload);
+        try {
+          const Notification = app.get('models').Notification || require('../models').Notification;
+          const now = new Date();
+          Notification.create({ recipient_type: 'user', recipient_id: String(order.id_customer), title: 'Invoice sent', body: JSON.stringify(notifyPayload), data: notifyPayload, read: false, created_at: now, updated_at: now }).catch(()=>{});
+          Notification.create({ recipient_type: 'role', recipient_id: 'admin', title: 'Invoice sent', body: JSON.stringify(notifyPayload), data: notifyPayload, read: false, created_at: now, updated_at: now }).catch(()=>{});
+        } catch (e) {}
+      }
+    } catch (e) { console.error('emit invoice.notify error', e && e.message ? e.message : e); }
+
+    return true;
+  } catch (err) {
+    console.error('sendInvoiceWebhook error', err && err.message ? err.message : err);
+    return false;
+  }
+}
 
 // Helper: recalculate totals and sync to Order and Piutang
 async function syncPaymentEffects(payment, transaction = null) {
@@ -195,6 +302,10 @@ module.exports = {
           // ensure piutang exists if needed, then sync effects (order status, piutang)
             await ensurePiutangForCustomer(payment.id_customer || (payment.Order && payment.Order.id_customer));
             await syncPaymentEffects(payment);
+            // emit payment created/updated
+            try { emitPaymentEvent(req.app, payment, 'payment.created'); } catch (e) { /* ignore */ }
+            // If payment created with status verified, trigger invoice webhook
+            try { if (payment.status && String(payment.status).toLowerCase() === 'verified') { sendInvoiceWebhook(req.app, payment.no_transaksi || (payment.Order && payment.Order.no_transaksi)); } } catch (e) {}
         return res.status(201).json(payment);
       }
 
@@ -225,6 +336,8 @@ module.exports = {
   // ensure piutang exists for customer, then sync
   await ensurePiutangForCustomer(payment.Customer ? payment.Customer.id_customer : null);
   await syncPaymentEffects(payment);
+  try { emitPaymentEvent(req.app, payment, 'payment.created'); } catch (e) { }
+  try { if (payment.status && String(payment.status).toLowerCase() === 'verified') { sendInvoiceWebhook(req.app, payment.no_transaksi || (payment.Order && payment.Order.no_transaksi)); } } catch (e) {}
         return res.status(201).json(payment);
       }
 
@@ -257,6 +370,8 @@ module.exports = {
   // ensure piutang exists for customer, then sync
   await ensurePiutangForCustomer(payment.Customer ? payment.Customer.id_customer : null);
   await syncPaymentEffects(payment);
+  try { emitPaymentEvent(req.app, payment, 'payment.created'); } catch (e) { }
+  try { if (payment.status && String(payment.status).toLowerCase() === 'verified') { sendInvoiceWebhook(req.app, payment.no_transaksi || (payment.Order && payment.Order.no_transaksi)); } } catch (e) {}
         return res.status(201).json(payment);
       }
 
@@ -402,6 +517,7 @@ module.exports = {
         ]
       });
       await syncPaymentEffects(updatedPayment);
+    try { emitPaymentEvent(req.app, updatedPayment, 'payment.updated'); } catch (e) { }
       res.json(updatedPayment);
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -510,6 +626,9 @@ module.exports = {
         ]
       });
       await syncPaymentEffects(updatedPayment);
+    try { emitPaymentEvent(req.app, updatedPayment, 'payment.updated'); } catch (e) { }
+      // trigger invoice webhook notify when payment is verified
+      try { sendInvoiceWebhook(req.app, updatedPayment.no_transaksi || (updatedPayment.Order && updatedPayment.Order.no_transaksi)); } catch (e) { console.error('sendInvoiceWebhook error', e && e.message ? e.message : e); }
       res.status(200).json(updatedPayment);
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -539,6 +658,9 @@ module.exports = {
         ]
       });
       await Promise.all(updatedPayments.map(p => syncPaymentEffects(p)));
+    try { updatedPayments.forEach(p => emitPaymentEvent(req.app, p, 'payment.updated')); } catch (e) { }
+    // trigger invoice webhook for any updated payments that are verified
+    try { updatedPayments.forEach(p => { if (p.status && String(p.status).toLowerCase() === 'verified') { try { sendInvoiceWebhook(req.app, p.no_transaksi || (p.Order && p.Order.no_transaksi)); } catch (e) {} } }); } catch (e) {}
       res.status(200).json(updatedPayments);
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -566,6 +688,17 @@ module.exports = {
       // ensure piutang exists and sync effects
       await ensurePiutangForCustomer(updatedPayment.id_customer || (updatedPayment.Order && updatedPayment.Order.id_customer));
       await syncPaymentEffects(updatedPayment);
+    try { emitPaymentEvent(req.app, updatedPayment, 'payment.updated'); } catch (e) { }
+      // trigger invoice webhook notify when payment is verified (non-blocking)
+      try {
+        // call async but don't block response; log if error
+        sendInvoiceWebhook(req.app, updatedPayment.no_transaksi || (updatedPayment.Order && updatedPayment.Order.no_transaksi)).catch(err => {
+          console.error('sendInvoiceWebhook (approve) error', err && err.message ? err.message : err);
+        });
+      } catch (e) {
+        console.error('sendInvoiceWebhook(approve) sync error', e && e.message ? e.message : e);
+      }
+
       res.status(200).json(updatedPayment);
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -595,8 +728,10 @@ module.exports = {
           { model: models.Customer, attributes: ['id_customer', 'nama', 'no_hp'] }
         ]
       });
-      await Promise.all(updatedPayments.map(p => syncPaymentEffects(p)));
-      res.status(200).json(updatedPayments);
+  await Promise.all(updatedPayments.map(p => syncPaymentEffects(p)));
+  // trigger invoice webhook for any updated payments that are verified
+  try { updatedPayments.forEach(p => { if (p.status && String(p.status).toLowerCase() === 'verified') { try { sendInvoiceWebhook(req.app, p.no_transaksi || (p.Order && p.Order.no_transaksi)); } catch (e) {} } }); } catch (e) {}
+  res.status(200).json(updatedPayments);
     } catch (error) {
       res.status(500).json({ error: error.message });
     }

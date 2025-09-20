@@ -3,6 +3,8 @@ const router = express.Router();
 const paymentController = require('../controllers/paymentController');
 const models = require('../models');
 const { botAuth } = require('./bot');
+const auth = require('../middleware/auth');
+const admin = require('../middleware/admin');
 
 /**
  * @swagger
@@ -218,7 +220,8 @@ router.put('/bot/payment/update-link', botAuth, paymentController.updatePaymentL
 router.put('/:id', paymentController.updatePaymentById);
 
 // Admin approve payment (set nominal and verified)
-router.put('/approve/:id', paymentController.approvePayment);
+// Protect approve route: only authenticated admin can approve payments
+router.put('/approve/:id', auth, admin, paymentController.approvePayment);
 
 /**
  * @swagger

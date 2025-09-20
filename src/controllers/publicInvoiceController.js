@@ -88,10 +88,11 @@ async function postNotifyWebhook(req, res) {
     const data = await fetchAggregateData(req.app, no);
     if (!data) return res.status(404).json({ error: 'Order not found' });
 
+    const customerPhone = data.customer?.no_hp || '';
     const payload = {
       transaksi: data.order.no_transaksi,
       invoice_url: `${process.env.APP_URL || `${req.protocol}://${req.get('host')}`}/invoice/${data.order.no_transaksi}.pdf`,
-      customer: { nama: data.customer?.nama || '', phone: data.customer?.no_hp || '' },
+      customer: { nama: data.customer?.nama || '', phone: String(customerPhone || ''), no_hp: String(customerPhone || '') },
       total: Number(data.order.total_bayar || data.order.total_harga || 0),
       paid: data.payments.reduce((s, p) => s + Number(p.nominal || 0), 0),
       balance: Number(data.order.total_bayar || data.order.total_harga || 0) - data.payments.reduce((s, p) => s + Number(p.nominal || 0), 0),
@@ -137,12 +138,15 @@ async function postNotifyWebhook(req, res) {
     try {
       const io = req.app.get('io');
       if (io && data.order && data.order.id_customer) {
-        io.to(`user:${data.order.id_customer}`).emit('invoice.notify', {
+        const notifyPayload = {
           no_transaksi: data.order.no_transaksi,
           invoice_url: payload.invoice_url,
           status: 'sent',
           timestamp: new Date().toISOString()
-        });
+        };
+        io.to(`user:${data.order.id_customer}`).emit('invoice.notify', notifyPayload);
+        // Also notify admins
+        io.to('role:admin').emit('invoice.notify', notifyPayload);
       }
     } catch (e) {
       // non-fatal - just log

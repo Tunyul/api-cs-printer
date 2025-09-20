@@ -39,6 +39,8 @@ app.use('/api/bot', require('./routes/bot').router);
 app.use('/invoice', require('./routes/publicInvoice'));
 // Healthcheck
 app.use('/health', require('./routes/health'));
+// Notifications
+app.use('/api/notifications', require('./routes/notification'));
 
 app.get('/', (req, res) => {
   res.json({

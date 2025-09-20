@@ -33,6 +33,10 @@ io.on('connection', (socket) => {
   if (socket.user && socket.user.id_user) {
     socket.join(`user:${socket.user.id_user}`);
   }
+  // If the connected user is an admin, join the admin room
+  if (socket.user && socket.user.role && socket.user.role === 'admin') {
+    socket.join('role:admin');
+  }
   socket.on('disconnect', () => {
     // noop for now
   });

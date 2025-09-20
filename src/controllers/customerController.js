@@ -86,6 +86,24 @@ exports.createCustomer = async (req, res) => {
       created_at: customer.created_at,
       updated_at: customer.updated_at
     });
+    // Emit realtime event to customer room and admins
+    try {
+      const io = req.app.get('io');
+      if (io) {
+        const payload = { id_customer: customer.id_customer, nama: customer.nama, no_hp: customer.no_hp, timestamp: new Date().toISOString() };
+        io.to(`user:${customer.id_customer}`).emit('customer.created', payload);
+        io.to('role:admin').emit('customer.created', payload);
+        // persist notification
+        try {
+          const Notification = req.app.get('models').Notification;
+          const now = new Date();
+          Notification.create({ recipient_type: 'user', recipient_id: String(customer.id_customer), title: 'Customer created', body: JSON.stringify(payload), data: payload, read: false, created_at: now, updated_at: now }).catch(()=>{});
+          Notification.create({ recipient_type: 'role', recipient_id: 'admin', title: 'Customer created', body: JSON.stringify(payload), data: payload, read: false, created_at: now, updated_at: now }).catch(()=>{});
+        } catch (e) { /* ignore */ }
+      }
+    } catch (e) {
+      console.error('emit customer.created error', e && e.message ? e.message : e);
+    }
   } catch (error) {
     res.status(400).json({
       success: false,
