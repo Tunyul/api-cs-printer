@@ -699,6 +699,9 @@ router.get('/order-by-phone', botAuth, async (req, res) => {
       if (orderNos.length > 0) {
         // find any pending order that matches one of these transaction numbers
         order = await models.Order.findOne({ where: { no_transaksi: orderNos, status_bot: 'pending' } });
+      } else {
+        // No customer and no related payments
+        return res.status(404).json({ error: 'Customer tidak ditemukan' });
       }
     }
 

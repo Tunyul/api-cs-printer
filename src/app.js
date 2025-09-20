@@ -35,6 +35,10 @@ app.use('/api/payments', require('./routes/payment'));
 app.use('/api/piutangs', require('./routes/piutang'));
 app.use('/api/invoices', require('./routes/invoice'));
 app.use('/api/bot', require('./routes/bot').router);
+// Public invoice PDF and webhook notify endpoints
+app.use('/invoice', require('./routes/publicInvoice'));
+// Healthcheck
+app.use('/health', require('./routes/health'));
 
 app.get('/', (req, res) => {
   res.json({

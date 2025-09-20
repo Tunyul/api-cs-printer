@@ -201,7 +201,6 @@ exports.getOrderById = async (req, res) => {
 
 // Fungsi untuk membuat order baru
 exports.createOrder = async (req, res) => {
-  const transaction = await models.sequelize.transaction();
   try {
     const { id_customer, no_hp, order_details } = req.body;
     let customer;
@@ -223,11 +222,7 @@ exports.createOrder = async (req, res) => {
 
     // Cek order dengan status_bot pending untuk customer
     let order = await models.Order.findOne({
-      where: {
-        id_customer: customer.id_customer,
-        status_bot: 'pending'
-      },
-      transaction
+      where: { id_customer: customer.id_customer, status_bot: 'pending' }
     });
 
     let nomor_transaksi;
@@ -275,12 +270,12 @@ exports.createOrder = async (req, res) => {
         status_bot: 'pending'
       };
 
-      order = await models.Order.create(orderData, { transaction });
+      order = await models.Order.create(orderData);
       isNewOrder = true;
 
       // Buat order details (gunakan field id_order dan id_produk sesuai model)
       for (const detail of orderDetailData) {
-        await models.OrderDetail.create({ ...detail, id_order: order.id_order, id_produk: detail.id_product || detail.id_produk }, { transaction });
+        await models.OrderDetail.create({ id_order: order.id_order, id_produk: detail.id_product || detail.id_produk, quantity: detail.quantity, harga_satuan: detail.harga_satuan, subtotal_item: detail.subtotal_item });
       }
     } else {
       // Tambahkan produk ke order detail yang sudah ada
@@ -292,36 +287,22 @@ exports.createOrder = async (req, res) => {
         const quantity = Number(item.qty || 1);
         const subtotal_item = harga * quantity;
         total_bayar += subtotal_item;
-        await models.OrderDetail.create({
-          quantity,
-          harga_satuan: harga,
-          subtotal_item,
-          id_order: order.id_order,
-          id_produk: item.id_product || item.id_produk
-        }, { transaction });
+        await models.OrderDetail.create({ id_order: order.id_order, id_produk: item.id_product || item.id_produk, quantity, harga_satuan: harga, subtotal_item });
       }
       // Update total_bayar di order
-      await models.Order.update({ total_bayar, total_harga: total_bayar }, {
-        where: { id_order: order.id_order },
-        transaction
-      });
+      await models.Order.update({ total_bayar, total_harga: total_bayar }, { where: { id_order: order.id_order } });
     }
 
     // Buat piutang otomatis (hanya jika order baru)
     if (isNewOrder) {
-      await createPiutangAutomatically(order.id_order, customer.id_customer, order.total_bayar, transaction);
+      await createPiutangAutomatically(order.id_order, customer.id_customer, order.total_bayar);
     }
 
     // Ambil order dengan detail
     const orderWithDetails = await models.Order.findByPk(order.id_order, {
-      include: [{
-        model: models.OrderDetail,
-        include: [models.Product]
-      }],
-      transaction
+      include: [{ model: models.OrderDetail, include: [models.Product] }]
     });
 
-    await transaction.commit();
     // Jika header bot = true, respon custom
     if (req.headers['bot'] === 'true') {
       // Ambil nama produk untuk setiap order detail dari request
@@ -348,9 +329,6 @@ exports.createOrder = async (req, res) => {
     // Default respon
     res.status(201).json(orderWithDetails);
   } catch (error) {
-    if (transaction && !transaction.finished) {
-      await transaction.rollback();
-    }
     res.status(500).json({ error: error.message });
   }
 };
@@ -407,7 +385,6 @@ exports.updateOrder = async (req, res) => {
       res.status(404).json({ error: 'Order not found' });
     }
   } catch (error) {
-    await transaction.rollback();
     res.status(500).json({ error: error.message });
   }
 };

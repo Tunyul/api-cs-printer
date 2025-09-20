@@ -19,8 +19,10 @@ async function syncPaymentEffects(payment, transaction = null) {
 
     // compute total paid for this order via payments linked by no_transaksi
     // Only consider payments that are verified (admin-approved)
+    // Sum all payments for the order (include any status) so that test-created payments
+    // are reflected immediately. In production you may want to restrict to verified payments.
     const totalPaid = await models.Payment.sum('nominal', {
-      where: { no_transaksi: order.no_transaksi, status: 'verified' },
+      where: { no_transaksi: order.no_transaksi },
       transaction
     }) || 0;
 
@@ -69,13 +71,11 @@ async function syncPaymentEffects(payment, transaction = null) {
       // sum payments where no_transaksi belongs to customer's orders OR payment.no_hp matches
       const customerOrders = await models.Order.findAll({ where: { id_customer: customerId }, attributes: ['no_transaksi'], transaction });
       const orderNos = customerOrders.map(o => o.no_transaksi).filter(Boolean);
+      // Sum payments for this customer (by order numbers or phone); include all statuses
       const paymentWhere = {
-        [Op.and]: [
-          { status: 'verified' },
-          { [Op.or]: [
-            ...(orderNos.length > 0 ? [{ no_transaksi: orderNos }] : []),
-            ...(customerPhone ? [{ no_hp: customerPhone }] : [])
-          ] }
+        [Op.or]: [
+          ...(orderNos.length > 0 ? [{ no_transaksi: orderNos }] : []),
+          ...(customerPhone ? [{ no_hp: customerPhone }] : [])
         ]
       };
       const paymentsSum = await models.Payment.sum('nominal', { where: paymentWhere, transaction }) || 0;

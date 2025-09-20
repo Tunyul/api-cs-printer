@@ -1,0 +1,87 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Invoice <%= order.no_transaksi %></title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; color:#1f2937; }
+    .container { width: 800px; margin: 24px auto; }
+    .header { display:flex; justify-content:space-between; align-items:center }
+    h1 { margin:0; font-size:28px }
+    .muted { color:#6b7280 }
+    .customer { margin-top:16px }
+    table { width:100%; border-collapse:collapse; margin-top:12px }
+    th, td { padding:10px; border:1px solid #e5e7eb; }
+    th { background:#f3f4f6; text-align:left }
+    .summary { background:#f8fafc; padding:16px; margin-top:12px; border-radius:6px }
+    .right { text-align:right }
+    .payments { margin-top:18px }
+    small.note { color:#6b7280 }
+    .logo-badge { background:#fb923c; color:white; padding:6px 10px; border-radius:999px; font-weight:700 }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div>
+        <h1>Invoice</h1>
+        <div class="muted">No. <%= order.no_transaksi %></div>
+      </div>
+      <div class="logo-badge">DP</div>
+    </div>
+
+    <div class="customer">
+      <strong><%= customer?.nama || '' %></strong><br/>
+      <div class="muted"><%= customer?.no_hp || '' %></div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Item</th>
+          <th style="width:80px">Qty</th>
+          <th style="width:120px">Price</th>
+          <th style="width:120px">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% orderDetails.forEach(function(it){ %>
+          <tr>
+            <td><%= it.Product ? it.Product.nama_produk : 'Item' %></td>
+            <td class="right"><%= it.quantity %></td>
+            <td class="right">Rp<%= Number(it.harga_satuan).toLocaleString('id-ID') %></td>
+            <td class="right">Rp<%= Number(it.subtotal_item).toLocaleString('id-ID') %></td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+
+    <div class="summary">
+      <div>Total Pesanan: Rp<%= Number(order.total_harga || order.total_bayar || 0).toLocaleString('id-ID') %></div>
+      <div>Total Pembayaran: Rp<%= Number(payments.reduce((s,p)=>s+Number(p.nominal||0),0)).toLocaleString('id-ID') %></div>
+      <h3>Sisa yang harus dibayar: Rp<%= (Number(order.total_harga||order.total_bayar||0)-payments.reduce((s,p)=>s+Number(p.nominal||0),0)).toLocaleString('id-ID') %></h3>
+    </div>
+
+    <div class="payments">
+      <h4>Riwayat Pembayaran</h4>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Tanggal</th><th>Nominal</th></tr>
+        </thead>
+        <tbody>
+          <% payments.forEach(function(p){ %>
+            <tr>
+              <td><%= p.id_payment || p.id || '' %></td>
+              <td><%= new Date(p.tanggal).toISOString() %></td>
+              <td class="right">Rp<%= Number(p.nominal).toLocaleString('id-ID') %></td>
+            </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="muted note">Gunakan tombol "Download PDF" untuk menyimpan atau mencetak bukti pembayaran.</p>
+  </div>
+</body>
+</html>
