@@ -33,6 +33,7 @@ app.use('/api/products', require('./routes/product'));
 app.use('/api/order-detail', require('./routes/orderDetail'));
 app.use('/api/payments', require('./routes/payment'));
 app.use('/api/piutangs', require('./routes/piutang'));
+app.use('/api/invoices', require('./routes/invoice'));
 app.use('/api/bot', require('./routes/bot').router);
 
 app.get('/', (req, res) => {

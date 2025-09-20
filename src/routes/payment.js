@@ -222,6 +222,43 @@ router.put('/approve/:id', paymentController.approvePayment);
 
 /**
  * @swagger
+ * /api/payments/approve/{id}:
+ *   put:
+ *     summary: Approve payment (admin)
+ *     tags: [Payment]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID of the payment to approve
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               nominal:
+ *                 type: number
+ *                 description: Amount to set on the payment (required)
+ *             required: [nominal]
+ *     responses:
+ *       200:
+ *         description: Payment approved and verified; triggers order/piutang allocation
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Payment'
+ *       400:
+ *         description: Missing or invalid nominal/id
+ *       404:
+ *         description: Payment not found
+ */
+
+/**
+ * @swagger
  * /api/payments:
  *   put:
  *     summary: Update payment by body (provide id_payment in body)

@@ -28,6 +28,7 @@ const piutang = require('./piutang')(sequelize, Sequelize.DataTypes);
 const payment = require('./payment')(sequelize, Sequelize.DataTypes);
 const orderDeletionAudit = require('./orderDeletionAudit')(sequelize, Sequelize.DataTypes);
 const user = require('./user')(sequelize);
+const invoiceToken = require('./invoiceToken')(sequelize, Sequelize.DataTypes);
 
 db.Customer = customer;
 db.Product = product;
@@ -37,6 +38,7 @@ db.Piutang = piutang;
 db.Payment = payment;
 db.OrderDeletionAudit = orderDeletionAudit;
 db.User = user;
+db.InvoiceToken = invoiceToken;
 
 Object.keys(db).forEach(modelName => {
   if (db[modelName].associate) {
