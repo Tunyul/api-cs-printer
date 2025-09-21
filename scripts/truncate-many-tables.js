@@ -8,6 +8,10 @@ const { Sequelize } = require('sequelize');
 const config = require('../src/config/database');
 
 (async () => {
+  if (!process.env.SAFE_RUN) {
+    console.error('This script is destructive. Set SAFE_RUN=1 and rerun to proceed.');
+    process.exit(1);
+  }
   const sequelize = new Sequelize(config.database, config.username, config.password, config);
   const tables = ['order_details', 'payments', 'piutangs', 'orders', 'products'];
   try {
