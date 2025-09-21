@@ -43,3 +43,11 @@
 ### Maintenance
 - Truncated existing notifications table to remove customer notifications (one-off maintenance).
 
+
+## [2.0.1] - 2025-09-21
+### Changed
+- Bumped package version to 2.0.1 and prepared release.
+
+### Maintenance
+- Minor packaging and version metadata updates.
+

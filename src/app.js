@@ -45,7 +45,7 @@ app.use('/api/notifications', require('./routes/notification'));
 app.get('/', (req, res) => {
   res.json({
     message: 'Cukong API is running',
-    version: '1.0.0'
+    version: '2.0.1'
   });
 });
 
