@@ -137,15 +137,14 @@ async function postNotifyWebhook(req, res) {
     // Emit realtime event to customer if Socket.IO available
     try {
       const io = req.app.get('io');
-      if (io && data.order && data.order.id_customer) {
+      if (io && data.order) {
         const notifyPayload = {
           no_transaksi: data.order.no_transaksi,
           invoice_url: payload.invoice_url,
           status: 'sent',
           timestamp: new Date().toISOString()
         };
-        io.to(`user:${data.order.id_customer}`).emit('invoice.notify', notifyPayload);
-        // Also notify admins
+        // emit to admin only
         io.to('role:admin').emit('invoice.notify', notifyPayload);
       }
     } catch (e) {

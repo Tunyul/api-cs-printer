@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const models = require('../models');
+const notify = require('../utils/notify');
 const { computeOrderDetailPrice } = require('../utils/priceCalculator');
 /**
  * @swagger
@@ -58,7 +59,9 @@ router.post('/payment', botAuth, async (req, res) => {
     // perform create/update inside a transaction and ensure piutang/order sync
     const paymentController = require('../controllers/paymentController');
     const sequelize = models.sequelize || (models.Order && models.Order.sequelize);
-    const resPayment = await sequelize.transaction(async (t) => {
+  // We'll collect notify items inside the transaction and emit them after commit
+  let notifyItems = [];
+  const resPayment = await sequelize.transaction(async (t) => {
       if (payment) {
         // When bot submits bukti again, mark payment to await admin verification
         await payment.update({ bukti: link_bukti, no_hp, nominal, tipe, status: 'menunggu_verifikasi', updated_at: new Date() }, { transaction: t });
@@ -66,6 +69,16 @@ router.post('/payment', botAuth, async (req, res) => {
         // ensure piutang exists and sync effects inside transaction
         await paymentController.ensurePiutangForCustomer(updated.id_customer || (updated.Order && updated.Order.id_customer), t);
         await paymentController.syncPaymentEffects(updated, t);
+        // collect notify item to run after commit
+        try {
+          let customerId = updated.id_customer || null;
+          if (!customerId && updated.no_transaksi) {
+            const orderForCustomer = await models.Order.findOne({ where: { no_transaksi: updated.no_transaksi }, transaction: t });
+            if (orderForCustomer) customerId = orderForCustomer.id_customer;
+          }
+          const payload = { id_payment: updated.id_payment, no_transaksi: updated.no_transaksi, nominal: Number(updated.nominal || 0), status: updated.status || null, timestamp: new Date().toISOString() };
+          notifyItems.push({ type: 'payment.updated', customerId, payload });
+        } catch (e) {}
         return updated;
       }
 
@@ -80,12 +93,30 @@ router.post('/payment', botAuth, async (req, res) => {
         created_at: new Date(),
         updated_at: new Date()
       }, { transaction: t });
-      const reloaded = await models.Payment.findByPk(created.id_payment, { transaction: t });
+  const reloaded = await models.Payment.findByPk(created.id_payment, { transaction: t });
       // ensure piutang exists and sync effects inside transaction
       await paymentController.ensurePiutangForCustomer(reloaded.id_customer || (reloaded.Order && reloaded.Order.id_customer), t);
       await paymentController.syncPaymentEffects(reloaded, t);
+      // collect notify item to run after commit
+      try {
+        let customerId = reloaded.id_customer || null;
+        if (!customerId && reloaded.no_transaksi) {
+          const orderForCustomer = await models.Order.findOne({ where: { no_transaksi: reloaded.no_transaksi }, transaction: t });
+          if (orderForCustomer) customerId = orderForCustomer.id_customer;
+        }
+        const payload = { id_payment: reloaded.id_payment, no_transaksi: reloaded.no_transaksi, nominal: Number(reloaded.nominal || 0), status: reloaded.status || null, timestamp: new Date().toISOString() };
+        notifyItems.push({ type: 'payment.created', customerId, payload });
+      } catch (e) {}
       return reloaded;
     });
+
+    // after transaction committed, emit/persist notifications
+    try {
+      for (const it of notifyItems) {
+        // customer notifications intentionally skipped
+        try { await notify(req.app, 'role', 'admin', it.type, it.payload, it.type.replace('.', ' ')); } catch (e) {}
+      }
+    } catch (e) {}
 
     const result = resPayment.toJSON ? resPayment.toJSON() : resPayment;
     if (result.tanggal instanceof Date) {
@@ -448,8 +479,18 @@ router.post('/customer', botAuth, async (req, res) => {
         created_at: new Date(),
         updated_at: new Date()
       });
+      try {
+        const payload = { id_customer: user.id_customer, nama: user.nama, no_hp: user.no_hp, timestamp: new Date().toISOString() };
+  // notify admins only (do not notify customers)
+  notify(req.app, 'role', 'admin', 'customer.created', payload, 'Customer created').catch(()=>{});
+      } catch (e) {}
       return res.status(201).json(user);
     }
+    // existing user: still notify admins that a bot requested this customer (optional)
+    try {
+      const payload = { id_customer: user.id_customer, nama: user.nama, no_hp: user.no_hp, timestamp: new Date().toISOString() };
+      notify(req.app, 'role', 'admin', 'customer.lookup', payload, 'Customer looked up by bot').catch(()=>{});
+    } catch (e) {}
     res.json(user);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -519,6 +560,11 @@ router.post('/order', botAuth, async (req, res) => {
       catatan: '',
       status_bot: 'pending'
     });
+    try {
+      const payload = { id_order: order.id_order, no_transaksi: order.no_transaksi, id_customer: customer.id_customer, total_bayar: order.total_bayar, status_bot: order.status_bot, timestamp: new Date().toISOString() };
+      // notify admins only
+      notify(req.app, 'role', 'admin', 'order.created', payload, 'Order created').catch(()=>{});
+    } catch (e) {}
     res.status(201).json(order);
   } catch (error) {
     res.status(500).json({ error: error.message });

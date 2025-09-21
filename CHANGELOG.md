@@ -32,3 +32,14 @@
 - Improved payment allocation to `piutang` (FIFO) and status updates.
 - Consistent handling of `bukti` / `bukti_pembayaran` fields across endpoints.
 
+
+## [1.3.4] - 2025-09-21
+### Changed
+- Disable customer-targeted realtime and persisted notifications; notifications now delivered only to admin role (security/operational decision).
+
+### Added
+- Smoke test script: `scripts/smoke_test_notif.js` for bot flows (create customer, order, payment) with 3s delay between steps.
+
+### Maintenance
+- Truncated existing notifications table to remove customer notifications (one-off maintenance).
+

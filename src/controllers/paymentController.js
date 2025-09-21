@@ -18,20 +18,12 @@ function emitPaymentEvent(app, payment, event = 'payment.updated') {
       status: payment.status || null,
       timestamp: new Date().toISOString()
     };
-    if (customerId) io.to(`user:${customerId}`).emit(event, payload);
-    // also notify admins
-    io.to('role:admin').emit(event, payload);
-    // persist notifications
+    // Use notify helper for emits and persistence (centralized naming)
     try {
-      const Notification = require('../models').Notification;
-      const now = new Date();
-      if (customerId) {
-        Notification.create({ recipient_type: 'user', recipient_id: String(customerId), title: `Payment ${event}`, body: JSON.stringify(payload), data: payload, read: false, created_at: now, updated_at: now }).catch(e=>console.error('notif create user error', e && e.message));
-      }
-      // admin notification
-      Notification.create({ recipient_type: 'role', recipient_id: 'admin', title: `Payment ${event}`, body: JSON.stringify(payload), data: payload, read: false, created_at: now, updated_at: now }).catch(e=>console.error('notif create admin error', e && e.message));
+      const notify = require('../utils/notify');
+      notify(app, 'role', 'admin', event, payload, `Payment ${event}`);
     } catch (e) {
-      console.error('persist notification error', e && e.message ? e.message : e);
+      console.error('notify payment emit error', e && e.message ? e.message : e);
     }
   } catch (err) {
     console.error('emitPaymentEvent error', err && err.message ? err.message : err);
@@ -89,16 +81,13 @@ async function sendInvoiceWebhook(app, no_transaksi) {
     // emit realtime invoice.notify and persist Notification rows
     try {
       const io = app.get('io');
-      if (io && order && order.id_customer) {
+      if (order && order.id_customer) {
         const notifyPayload = { no_transaksi: order.no_transaksi, invoice_url: payload.invoice_url, status: 'sent', timestamp: new Date().toISOString() };
-        io.to(`user:${order.id_customer}`).emit('invoice.notify', notifyPayload);
-        io.to('role:admin').emit('invoice.notify', notifyPayload);
         try {
-          const Notification = app.get('models').Notification || require('../models').Notification;
-          const now = new Date();
-          Notification.create({ recipient_type: 'user', recipient_id: String(order.id_customer), title: 'Invoice sent', body: JSON.stringify(notifyPayload), data: notifyPayload, read: false, created_at: now, updated_at: now }).catch(()=>{});
-          Notification.create({ recipient_type: 'role', recipient_id: 'admin', title: 'Invoice sent', body: JSON.stringify(notifyPayload), data: notifyPayload, read: false, created_at: now, updated_at: now }).catch(()=>{});
-        } catch (e) {}
+          const notify = require('../utils/notify');
+          notify(app, 'user', order.id_customer, 'invoice.notify', notifyPayload, 'Invoice sent');
+          notify(app, 'role', 'admin', 'invoice.notify', notifyPayload, 'Invoice sent');
+        } catch (e) { console.error('notify invoice.sent error', e && e.message ? e.message : e); }
       }
     } catch (e) { console.error('emit invoice.notify error', e && e.message ? e.message : e); }
 

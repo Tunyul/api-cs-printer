@@ -8,6 +8,25 @@ exports.updateStatusBotByNoTransaksi = async (req, res) => {
     const order = await models.Order.findOne({ where: { no_transaksi } });
     if (!order) return res.status(404).json({ error: 'Order tidak ditemukan' });
     await order.update({ status_bot: 'selesai' });
+    // emit order.status_bot.updated to user and admins and persist notification
+    try {
+      const io = req.app.get('io');
+      const updated = await models.Order.findByPk(order.id_order);
+      if (io && updated) {
+  const payload = { id_order: updated.id_order, no_transaksi: updated.no_transaksi, id_customer: updated.id_customer, status_bot: updated.status_bot, timestamp: new Date().toISOString() };
+  // emit to admin only
+  io.to('role:admin').emit('order.status_bot.updated', payload);
+        try {
+          const Notification = req.app.get('models').Notification;
+          const now = new Date();
+          try {
+            const notify = require('../utils/notify');
+            // customer notifications intentionally skipped
+            notify(req.app, 'role', 'admin', 'order.status_bot.updated', payload, 'Order bot status updated');
+          } catch (e) { console.error('notify order.status_bot.updated error', e && e.message ? e.message : e); }
+        } catch (e) {}
+      }
+    } catch (e) { console.error('emit order.status_bot.updated error', e && e.message ? e.message : e); }
     res.json(order);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -308,15 +327,12 @@ exports.createOrder = async (req, res) => {
       const io = req.app.get('io');
       if (io && order) {
         const payload = { id_order: order.id_order, no_transaksi: order.no_transaksi, id_customer: order.id_customer, total_bayar: Number(order.total_bayar || 0), status_bot: order.status_bot, timestamp: new Date().toISOString() };
-        io.to(`user:${order.id_customer}`).emit('order.created', payload);
-        io.to('role:admin').emit('order.created', payload);
-        // persist notification
+        // Use notify helper to emit and persist (avoid duplicate emits)
         try {
-          const Notification = req.app.get('models').Notification;
-          const now = new Date();
-          Notification.create({ recipient_type: 'user', recipient_id: String(order.id_customer), title: 'Order created', body: JSON.stringify(payload), data: payload, read: false, created_at: now, updated_at: now }).catch(()=>{});
-          Notification.create({ recipient_type: 'role', recipient_id: 'admin', title: 'Order created', body: JSON.stringify(payload), data: payload, read: false, created_at: now, updated_at: now }).catch(()=>{});
-        } catch (e) {}
+          const notify = require('../utils/notify');
+          // customer notifications intentionally skipped
+          notify(req.app, 'role', 'admin', 'order.created', payload, 'Order created');
+        } catch (e) { console.error('notify order.created error', e && e.message ? e.message : e); }
       }
     } catch (e) {
       console.error('emit order.created error', e && e.message ? e.message : e);
@@ -404,14 +420,15 @@ exports.updateOrder = async (req, res) => {
         const io = req.app.get('io');
         if (io && updatedOrder) {
           const payload = { id_order: updatedOrder.id_order, no_transaksi: updatedOrder.no_transaksi, id_customer: updatedOrder.id_customer, total_bayar: Number(updatedOrder.total_bayar || 0), timestamp: new Date().toISOString() };
-          io.to(`user:${updatedOrder.id_customer}`).emit('order.updated', payload);
           io.to('role:admin').emit('order.updated', payload);
           // persist notification
           try {
             const Notification = req.app.get('models').Notification;
             const now = new Date();
-            Notification.create({ recipient_type: 'user', recipient_id: String(updatedOrder.id_customer), title: 'Order updated', body: JSON.stringify(payload), data: payload, read: false, created_at: now, updated_at: now }).catch(()=>{});
-            Notification.create({ recipient_type: 'role', recipient_id: 'admin', title: 'Order updated', body: JSON.stringify(payload), data: payload, read: false, created_at: now, updated_at: now }).catch(()=>{});
+            try {
+              const notify = require('../utils/notify');
+              notify(req.app, 'role', 'admin', 'order.updated', payload, 'Order updated');
+            } catch (e) { console.error('notify order.updated error', e && e.message ? e.message : e); }
           } catch (e) {}
         }
       } catch (e) {
@@ -701,6 +718,24 @@ exports.updateOrderByNoTransaksi = async (req, res) => {
     }
     await order.update(updateData);
     const updatedOrder = await models.Order.findOne({ where: { no_transaksi } });
+    // emit order.updated to user and admins and persist notification
+    try {
+      const io = req.app.get('io');
+      if (io && updatedOrder) {
+  const payload = { id_order: updatedOrder.id_order, no_transaksi: updatedOrder.no_transaksi, id_customer: updatedOrder.id_customer, total_bayar: Number(updatedOrder.total_bayar || 0), timestamp: new Date().toISOString() };
+  // emit to admin only
+  io.to('role:admin').emit('order.updated', payload);
+        try {
+          const Notification = req.app.get('models').Notification;
+          const now = new Date();
+          try {
+            const notify = require('../utils/notify');
+            // customer notifications intentionally skipped
+            notify(req.app, 'role', 'admin', 'order.updated', payload, 'Order updated');
+          } catch (e) { console.error('notify order.updated error', e && e.message ? e.message : e); }
+        } catch (e) {}
+      }
+    } catch (e) { console.error('emit order.updated error', e && e.message ? e.message : e); }
     res.status(200).json({ success: true, message: 'Order updated', order: updatedOrder });
   } catch (error) {
     res.status(500).json({ error: error.message });

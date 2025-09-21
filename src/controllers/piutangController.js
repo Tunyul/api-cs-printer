@@ -104,14 +104,13 @@ class PiutangController {
         const io = req.app.get('io');
         if (io && piutangWithCustomer) {
           const payload = { id_piutang: piutangWithCustomer.id_piutang, id_customer: piutangWithCustomer.id_customer, jumlah_piutang: Number(piutangWithCustomer.jumlah_piutang||0), status: piutangWithCustomer.status, timestamp: new Date().toISOString() };
-          io.to(`user:${piutangWithCustomer.id_customer}`).emit('piutang.created', payload);
+          // emit to admin only
           io.to('role:admin').emit('piutang.created', payload);
           // persist notification
           try {
-            const Notification = req.app.get('models').Notification;
-            const now = new Date();
-            Notification.create({ recipient_type: 'user', recipient_id: String(piutangWithCustomer.id_customer), title: 'Piutang created', body: JSON.stringify(payload), data: payload, read: false, created_at: now, updated_at: now }).catch(()=>{});
-            Notification.create({ recipient_type: 'role', recipient_id: 'admin', title: 'Piutang created', body: JSON.stringify(payload), data: payload, read: false, created_at: now, updated_at: now }).catch(()=>{});
+            // use centralized notify helper to emit + persist
+            const notify = require('../utils/notify');
+            notify(req.app, 'role', 'admin', 'piutang.created', payload, 'Piutang created').catch(()=>{});
           } catch(e){}
         }
       } catch (e) {
@@ -160,7 +159,7 @@ class PiutangController {
         const io = req.app.get('io');
         if (io && piutangWithCustomer) {
           const payload = { id_piutang: piutangWithCustomer.id_piutang, id_customer: piutangWithCustomer.id_customer, jumlah_piutang: Number(piutangWithCustomer.jumlah_piutang||0), status: piutangWithCustomer.status, timestamp: new Date().toISOString() };
-          io.to(`user:${piutangWithCustomer.id_customer}`).emit('piutang.updated', payload);
+          // emit to admin only
           io.to('role:admin').emit('piutang.updated', payload);
         }
       } catch (e) {
