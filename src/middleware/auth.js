@@ -6,7 +6,8 @@ module.exports = async function (req, res, next) {
   const token = authHeader && authHeader.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Token tidak ditemukan' });
   try {
-    const decoded = jwt.verify(token, 'secretkey');
+  const secret = process.env.JWT_SECRET || 'secretkey';
+  const decoded = jwt.verify(token, secret);
     req.user = decoded;
     // Ambil user dari database untuk cek role
     const user = await models.User.findByPk(decoded.id_user);
