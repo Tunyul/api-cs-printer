@@ -1,6 +1,6 @@
 {
   "name": "cukong-api",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "API for CS Bot Printing",
   "main": "server.js",
   "scripts": {
