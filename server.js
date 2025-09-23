@@ -16,19 +16,25 @@ const io = new Server(server, {
 
 // Simple JWT handshake verification
 io.use((socket, next) => {
-  try {
-    const token = socket.handshake.auth && socket.handshake.auth.token;
-    if (!token) return next(new Error('Authentication error'));
-    // Accept "Bearer <token>" or raw token
-    if (typeof token === 'string' && token.startsWith('Bearer ')) token = token.slice(7);
+  // token may be mutated so use let
+  let token = socket.handshake.auth && socket.handshake.auth.token;
+  if (!token) return next(new Error('Authentication error'));
+  // Accept "Bearer <token>" or raw token
+  if (typeof token === 'string' && token.startsWith('Bearer ')) token = token.slice(7);
   const jwt = require('jsonwebtoken');
   const { JWT_SECRET } = require('./src/config/auth');
-  const payload = jwt.verify(token, JWT_SECRET);
+  // Use callback-style verify so we can inspect the error type and send a clearer
+  // message to clients (socket.io will pass this message to connect_error).
+  jwt.verify(token, JWT_SECRET, (err, payload) => {
+    if (err) {
+      console.error('socket auth error:', err && err.message ? err.message : err);
+      // If token expired, forward the original jwt message so clients can react
+      if (err.name === 'TokenExpiredError') return next(new Error('jwt expired'));
+      return next(new Error('Authentication error'));
+    }
     socket.user = payload;
     return next();
-  } catch (err) {
-    return next(new Error('Authentication error'));
-  }
+  });
 });
 
 io.on('connection', (socket) => {

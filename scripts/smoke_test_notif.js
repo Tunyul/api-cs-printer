@@ -1,58 +1,84 @@
-const axios = require('axios');
+#!/usr/bin/env node
+/*
+  Smoke test script for bot flow: create customer, create order, add order-detail, create payment
+  Usage:
+    BOT_API_KEY=yourkey BASE_URL=http://localhost:3000 node scripts/smoke_test_notif.js
+  The script waits 3 seconds between each step.
+*/
 
-// Config
-const BOT_KEY = process.env.BOT_KEY || 'supersemar1998';
-const BASE = process.env.BASE_URL || 'http://localhost:3000';
+const fetch = require('node-fetch');
 
-const headers = { 'x-bot-key': BOT_KEY, 'Content-Type': 'application/json' };
+const BOT_API_KEY = process.env.BOT_API_KEY;
+const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+if (!BOT_API_KEY) {
+  console.error('Missing BOT_API_KEY environment variable');
+  process.exit(1);
+}
+
+const headers = {
+  'Content-Type': 'application/json',
+  'x-bot-key': BOT_API_KEY
+};
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function run() {
   try {
-    console.log('Starting smoke test (3s delay between steps)');
+    console.log('Starting bot smoke test...');
+    const data = {
+      nama: 'testnotiftiga',
+      no_hp: '623333333333'
+    };
 
-    // Step 1: create customer
-    const customerPayload = { no_hp: '6281122334456', nama: 'testnotifsatu' };
-    console.log('1) Creating customer', customerPayload);
-    const cResp = await axios.post(`${BASE}/api/bot/customer`, customerPayload, { headers });
-    console.log('1) Response status:', cResp.status);
-    console.log('1) Body:', cResp.data);
+    // 1) create/check customer
+    console.log('\n[1] Create/check customer');
+    let res = await fetch(`${BASE_URL}/api/bot/customer`, { method: 'POST', headers, body: JSON.stringify(data) });
+    let json = await res.json();
+    console.log('status=', res.status, 'body=', json);
 
-    await sleep(3000);
+    await wait(3000);
 
-    // Step 2: create order (bot)
-    const orderPayload = { no_hp: '6281122334456' };
-    console.log('2) Creating order for customer', orderPayload);
-    const oResp = await axios.post(`${BASE}/api/bot/order`, orderPayload, { headers });
-    console.log('2) Response status:', oResp.status);
-    console.log('2) Body:', oResp.data);
-
-    await sleep(3000);
-
-    // Step 3: create payment (bot)
-    // The bot payment endpoint expects no_transaksi, link_bukti, no_hp
-    const no_transaksi = (oResp.data && (oResp.data.no_transaksi || oResp.data.no_transaksi)) || null;
+    // 2) create/get pending order
+    console.log('\n[2] Create/get pending order');
+    res = await fetch(`${BASE_URL}/api/bot/order`, { method: 'POST', headers, body: JSON.stringify({ no_hp: data.no_hp }) });
+    json = await res.json();
+    console.log('status=', res.status, 'body=', json);
+    const no_transaksi = json.no_transaksi || (json.order && json.order.no_transaksi);
     if (!no_transaksi) {
-      console.error('No no_transaksi found in order response; aborting payment step');
-      process.exit(2);
+      console.error('no_transaksi not found, aborting');
+      process.exit(1);
     }
-    const paymentPayload = { no_transaksi, link_bukti: 'okokoko.com', no_hp: '6281122334456' };
-    console.log('3) Creating payment', paymentPayload);
-    const pResp = await axios.post(`${BASE}/api/bot/payment`, paymentPayload, { headers });
-    console.log('3) Response status:', pResp.status);
-    console.log('3) Body:', pResp.data);
 
-    console.log('Smoke test completed. Check admin notifications for events.');
+    await wait(3000);
+
+    // 3) add order detail
+    console.log('\n[3] Add order detail (product 1, qty 100)');
+    const odPayload = { no_transaksi, order_details: [{ id_product: 1, qty: 100 }] };
+    res = await fetch(`${BASE_URL}/api/bot/order-detail`, { method: 'POST', headers, body: JSON.stringify(odPayload) });
+    json = await res.json();
+    console.log('status=', res.status, 'body=', json);
+
+    await wait(3000);
+
+    // 4) submit payment with bukti link
+    console.log('\n[4] Submit payment (bukti link)');
+    const paymentPayload = {
+      no_transaksi,
+      link_bukti: 'https://media.karousell.com/media/photos/products/2019/02/03/bukti_transfer_dari_customer_1549170174_29ee2dd4_progressive.jpg',
+      no_hp: data.no_hp
+    };
+    res = await fetch(`${BASE_URL}/api/bot/payment`, { method: 'POST', headers, body: JSON.stringify(paymentPayload) });
+    json = await res.json();
+    console.log('status=', res.status, 'body=', json);
+
+    console.log('\nSmoke test completed. Check server logs and notifications.');
   } catch (err) {
-    if (err.response) {
-      console.error('Error response status:', err.response.status);
-      console.error('Error response data:', err.response.data);
-    } else {
-      console.error('Error:', err.message);
-    }
+    console.error('Error during smoke test:', err);
     process.exit(1);
   }
 }
 
-if (require.main === module) run();
+run();

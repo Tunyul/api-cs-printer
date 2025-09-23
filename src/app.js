@@ -41,6 +41,7 @@ app.use('/invoice', require('./routes/publicInvoice'));
 app.use('/health', require('./routes/health'));
 // Notifications
 app.use('/api/notifications', require('./routes/notification'));
+app.use('/api/uix', require('./routes/uix'));
 
 app.get('/', (req, res) => {
   res.json({

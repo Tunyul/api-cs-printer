@@ -156,6 +156,18 @@ async function syncPaymentEffects(payment, transaction = null) {
   };
   await models.Order.update(updates, { where: { id_order: order.id_order }, transaction });
 
+  // If order becomes selesai, send external webhook (non-blocking)
+  try {
+    if (orderWorkflowStatus === 'selesai' || orderBotStatus === 'selesai') {
+  const orderWebhook = require('../utils/orderWebhook');
+  const customer = await models.Customer.findByPk(order.id_customer, { transaction });
+  const phone = customer ? customer.no_hp : null;
+  const customerName = customer ? customer.nama : '';
+  const invoiceUrl = `${process.env.APP_URL || 'http://localhost:3000'}/invoice/${order.no_transaksi}.pdf`;
+  orderWebhook.sendOrderCompletedWebhook(phone, customerName, order.no_transaksi, invoiceUrl).catch(() => {});
+    }
+  } catch (e) {}
+
     // Update piutang for this customer: allocate payments to piutangs (FIFO)
     const customerId = order.id_customer;
     if (customerId) {

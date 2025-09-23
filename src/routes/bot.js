@@ -20,24 +20,23 @@ const { computeOrderDetailPrice } = require('../utils/priceCalculator');
  *             properties:
  *               no_transaksi:
  *                 type: string
- *                 description: Nomor transaksi order
  *               link_bukti:
  *                 type: string
- *                 description: Link bukti pembayaran
  *               no_hp:
  *                 type: string
- *                 description: Nomor HP pelanggan
  *     responses:
  *       201:
  *         description: Payment created
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Payment'
  *       400:
  *         description: no_transaksi dan link_bukti wajib diisi
  *       404:
  *         description: Order tidak ditemukan
+ */
+/**
+ * @swagger
+ * tags:
+ *   - name: Bot
+ *     description: Bot API for automation
  */
 router.post('/payment', botAuth, async (req, res) => {
   try {
@@ -49,7 +48,16 @@ router.post('/payment', botAuth, async (req, res) => {
     if (!order) {
       return res.status(404).json({ error: 'Order tidak ditemukan' });
     }
-    let payment = await models.Payment.findOne({ where: { no_transaksi } });
+  // Find payment by both no_transaksi and no_hp when possible. We'll prefer the
+  // most recent matching payment. The desired behavior: update existing payment
+  // (when not verified) but create a new payment if the previous one is already
+  // verified (so we keep history and avoid modifying verified records).
+  let paymentWhere = { no_transaksi };
+  if (no_hp) paymentWhere.no_hp = no_hp;
+  // Fetch the most recent matching payment to inspect its current status.
+  let payment = await models.Payment.findOne({ where: paymentWhere, order: [['tanggal', 'DESC']] });
+  // If the latest payment is already verified, we should create a new one.
+  const forceCreate = payment && String(payment.status || '').toLowerCase() === 'verified';
 
   // Policy: bot/client MUST NOT set nominal/tipe. Ignore any provided values and
   // always create/update payments with nominal=0 and tipe='dp' so admin verifies.
@@ -61,11 +69,21 @@ router.post('/payment', botAuth, async (req, res) => {
     const sequelize = models.sequelize || (models.Order && models.Order.sequelize);
   // We'll collect notify items inside the transaction and emit them after commit
   let notifyItems = [];
+  // track whether we updated an existing payment or created a new one
+  let didUpdate = false;
   const resPayment = await sequelize.transaction(async (t) => {
-      if (payment) {
-        // When bot submits bukti again, mark payment to await admin verification
-        await payment.update({ bukti: link_bukti, no_hp, nominal, tipe, status: 'menunggu_verifikasi', updated_at: new Date() }, { transaction: t });
-        const updated = await models.Payment.findByPk(payment.id_payment, { transaction: t });
+      // If we decided before the transaction that we must create a new row
+      // (because the latest matching payment was already verified), skip
+      // updating and create fresh. Otherwise, update the existing payment
+      // (if any) inside the transaction.
+      if (!forceCreate) {
+  const paymentInTx = await models.Payment.findOne({ where: paymentWhere, order: [['tanggal', 'DESC']], transaction: t });
+        const canUpdateExisting = paymentInTx != null;
+        if (canUpdateExisting) {
+          // Update existing unverified payment
+          await paymentInTx.update({ bukti: link_bukti, no_hp, nominal, tipe, status: 'menunggu_verifikasi', updated_at: new Date() }, { transaction: t });
+          didUpdate = true;
+          const updated = await models.Payment.findByPk(paymentInTx.id_payment, { transaction: t });
         // ensure piutang exists and sync effects inside transaction
         await paymentController.ensurePiutangForCustomer(updated.id_customer || (updated.Order && updated.Order.id_customer), t);
         await paymentController.syncPaymentEffects(updated, t);
@@ -79,9 +97,11 @@ router.post('/payment', botAuth, async (req, res) => {
           const payload = { id_payment: updated.id_payment, no_transaksi: updated.no_transaksi, nominal: Number(updated.nominal || 0), status: updated.status || null, timestamp: new Date().toISOString() };
           notifyItems.push({ type: 'payment.updated', customerId, payload });
         } catch (e) {}
-        return updated;
+          return updated;
+        }
       }
 
+      // Otherwise create a fresh payment record (keep history of attempts)
       const created = await models.Payment.create({
         id_order: order.id_order,
         no_transaksi,
@@ -127,7 +147,8 @@ router.post('/payment', botAuth, async (req, res) => {
         result.tanggal = d.toISOString().slice(0, 19).replace('T', ' ');
       }
     }
-    res.status(payment ? 200 : 201).json(result);
+  // Respond 200 if we updated an existing payment, otherwise 201 for created
+  res.status(didUpdate ? 200 : 201).json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -204,10 +225,6 @@ router.get('/products', botAuth, async (req, res) => {
  *     responses:
  *       200:
  *         description: Link bukti pembayaran updated
- *         content:
- *           application/json:
- *             schema:
-*
  *       400:
  *         description: no_transaksi dan link_bukti wajib diisi
  *       404:
@@ -654,19 +671,31 @@ router.post('/order-detail', botAuth, async (req, res) => {
 
       // Priority:
       // 1) If dimension is provided and harga_per_m2 exists -> use m2 pricing
-      // 2) Else if harga_per_pcs exists -> use per-pcs pricing
-      // 3) Else if harga_per_m2 exists -> fallback to m2 pricing (use product unit_area)
+      // 2) Else if harga_per_m2 exists and product has unit_area or ukuran_standar parseable -> use m2 pricing fallback
+      // 3) Else if harga_per_pcs exists -> use per-pcs pricing
       if (parsed && hargaPerM2 > 0) {
         const computeRes = computeOrderDetailPrice(product, { dimension: parsed }, qty);
         harga_satuan = computeRes.harga_satuan;
         subtotal_item = computeRes.subtotal_item;
+      } else if (hargaPerM2 > 0) {
+        // try fallback using product.unit_area or parse ukuran_standar
+        const prodPlain = product.toJSON ? product.toJSON() : Object.assign({}, product);
+        let unitArea = prodPlain.unit_area;
+        // unit_area should be backfilled by migration; use it if available
+        if (unitArea != null) {
+          const computeRes = computeOrderDetailPrice(prodPlain, { dimension: null }, qty);
+          harga_satuan = computeRes.harga_satuan;
+          subtotal_item = computeRes.subtotal_item;
+        } else if (hargaPerPcs > 0) {
+          harga_satuan = hargaPerPcs;
+          subtotal_item = hargaPerPcs * qty;
+        } else {
+          harga_satuan = 0;
+          subtotal_item = 0;
+        }
       } else if (hargaPerPcs > 0) {
         harga_satuan = hargaPerPcs;
         subtotal_item = hargaPerPcs * qty;
-      } else if (hargaPerM2 > 0) {
-        const computeRes = computeOrderDetailPrice(product, { dimension: null }, qty);
-        harga_satuan = computeRes.harga_satuan;
-        subtotal_item = computeRes.subtotal_item;
       } else {
         harga_satuan = 0;
         subtotal_item = 0;
@@ -1011,15 +1040,62 @@ router.put('/order-detail/update', botAuth, async (req, res) => {
 
     // Create new details and compute totals
     let total_bayar = 0;
+    // helper parseDimension (same logic used elsewhere)
+    function parseDimension(d) {
+      if (!d) return null;
+      if (typeof d === 'object' && d.w != null && d.h != null) return { w: Number(d.w), h: Number(d.h), unit: d.unit || 'm' };
+      if (typeof d === 'string') {
+        // try format like '3x3m' or '300x300cm'
+        const m = d.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*[x d7]\s*(\d+(?:\.\d+)?)(m|cm)?$/);
+        if (m) return { w: Number(m[1]), h: Number(m[2]), unit: m[3] || 'm' };
+      }
+      if (d && d.width != null && d.height != null) return { w: Number(d.width), h: Number(d.height), unit: d.unit || 'm' };
+      return null;
+    }
+
     for (const detail of order_details) {
       if (!detail.id_product || typeof detail.qty !== 'number') return res.status(400).json({ error: 'id_product dan qty wajib diisi dan qty harus number' });
       const product = await models.Product.findByPk(detail.id_product);
       if (!product) return res.status(404).json({ error: `Product ${detail.id_product} not found` });
-      const harga = Number(product.harga_per_pcs || 0);
       const qty = Number(detail.qty);
-      const subtotal_item = harga * qty;
+
+      // Determine dimension source
+      const dimSource = detail.dimension || detail.size || { width: detail.width, height: detail.height, unit: detail.unit };
+      const parsed = parseDimension(dimSource);
+
+  // Determine pricing unit from product.ukuran_standar enum ('pcs' or 'm')
+  const hargaPerM2 = Number(product.harga_per_m2 || 0);
+  const pricingUnit = (product.ukuran_standar || 'pcs').toLowerCase();
+
+      let harga_satuan = 0;
+      let subtotal_item = 0;
+
+      if (pricingUnit === 'm' && hargaPerM2 > 0) {
+        // try request-provided dimension first
+        let dimToUse = parsed;
+        // if not provided, try using product.unit_area (backfilled)
+        if (!dimToUse) {
+          const prodPlain = product.toJSON ? product.toJSON() : Object.assign({}, product);
+          const unitArea = prodPlain.unit_area != null ? Number(prodPlain.unit_area) : null;
+          if (unitArea == null) {
+            return res.status(400).json({ error: `Dimension required for product ${product.nama_produk} (id ${product.id_produk}) priced per m2` });
+          }
+          // when unit_area exists, computeOrderDetailPrice can use it when dimension is null
+        }
+        // prepare product plain object and allow computeOrderDetailPrice to use product.unit_area if needed
+        const prodPlain = product.toJSON ? product.toJSON() : Object.assign({}, product);
+        const computeRes = computeOrderDetailPrice(prodPlain, { dimension: dimToUse }, qty);
+        harga_satuan = computeRes.harga_satuan;
+        subtotal_item = computeRes.subtotal_item;
+      } else {
+        // fallback to per-pcs pricing
+        const harga = Number(product.harga_per_pcs || 0);
+        harga_satuan = harga;
+        subtotal_item = harga * qty;
+      }
+
       total_bayar += subtotal_item;
-      await models.OrderDetail.create({ id_order: order.id_order, id_produk: detail.id_product, quantity: qty, harga_satuan: harga, subtotal_item });
+      await models.OrderDetail.create({ id_order: order.id_order, id_produk: detail.id_product, quantity: qty, harga_satuan, subtotal_item });
     }
 
     // Update order totals
