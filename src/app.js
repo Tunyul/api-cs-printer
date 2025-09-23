@@ -60,8 +60,10 @@ if (process.env.NODE_ENV !== 'test') {
       console.log('Database synchronized successfully.');
     })
     .catch(err => {
-      console.error('Unable to connect or sync to the database:', err);
-      process.exit(1);
+      // Log DB errors but don't kill the whole process so the app can still serve
+      // public endpoints or webhook flows that don't require DB during testing.
+      console.error('Unable to connect or sync to the database (continuing without DB):', err);
+      // Note: routes that depend on the DB will still fail at runtime.
     });
 } else {
   // In test environment, skip DB connection/sync to allow unit tests to import app without DB
