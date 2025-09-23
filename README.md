@@ -83,3 +83,17 @@ Pull request & issue sangat diterima!
 
 ## Lisensi
 MIT
+
+## Included scripts (public release)
+
+This repository has been cleaned for public distribution. The following helper scripts remain in `scripts/`:
+
+- `restart_server.sh` — restart the local server in this environment
+- `test_order_webhook.js` — quick manual webhook tester (requires dotenv)
+- `smoke_test_notif.js` — small notification smoke test
+- `check_swagger.js`, `debug_swagger_annotations.js`, `find_bad_jsdoc.js` — swagger / docs helpers
+- `seed_dummy_data.js`, `seed_uix.js`, `set_ukuran_from_harga_per_pcs.js`, `update_products_ukuran_standar.js` — selected seeding / migration helpers
+
+Sensitive files (like `.env`) and runtime logs are excluded from the repository. If you need to run tests or scripts that require environment variables, create a local `.env` (ignored by git) with the needed values.
+
+If you need additional scripts removed or restored, please open an issue or submit a PR.
