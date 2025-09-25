@@ -99,7 +99,7 @@ async function sendInvoiceWebhook(app, no_transaksi) {
 }
 
 // Helper: recalculate totals and sync to Order and Piutang
-async function syncPaymentEffects(payment, transaction = null) {
+async function syncPaymentEffects(payment, transaction = null, options = {}) {
   try {
     if (!payment) return;
     // find related order by no_transaksi (preferred) or by id_order if present
@@ -124,21 +124,29 @@ async function syncPaymentEffects(payment, transaction = null) {
 
     // update order dp_bayar and status_bayar accordingly
   const orderTotal = Number(order.total_bayar || 0);
-  // Determine payment-level status and order workflow status
+    // Determine payment-level status and order workflow status
   let paymentStatus = 'belum_lunas';
   let orderWorkflowStatus = order.status || 'pending';
   let orderStatusOrder = order.status_order || 'pending';
   let orderBotStatus = order.status_bot || 'pending';
+  const skipOrderStatusUpdate = options && options.skipOrderStatusUpdate;
 
   if (totalPaid >= orderTotal && orderTotal > 0) {
     paymentStatus = 'lunas';
-    orderWorkflowStatus = 'selesai';
+    // Only skip updating the public `status` field when requested. Keep
+    // internal order flow fields (`status_order` and `status_bot`) in sync so
+    // administrative flows and UI that depend on them still work.
+    if (!skipOrderStatusUpdate) {
+      orderWorkflowStatus = 'selesai';
+    }
     orderStatusOrder = 'selesai';
     orderBotStatus = 'selesai';
   } else if (totalPaid > 0) {
     // partial payment (treat as DP)
     paymentStatus = 'dp';
-    orderWorkflowStatus = 'proses';
+    if (!skipOrderStatusUpdate) {
+      orderWorkflowStatus = 'proses';
+    }
     orderStatusOrder = 'proses';
     // mark bot flow as completed when customer has submitted bukti/nominal via bot
     orderBotStatus = 'selesai';
@@ -155,18 +163,22 @@ async function syncPaymentEffects(payment, transaction = null) {
     updated_at: new Date()
   };
   await models.Order.update(updates, { where: { id_order: order.id_order }, transaction });
+  // reload the order to get actual stored values (respecting any skip flags)
+  const reloadedOrder = await models.Order.findByPk(order.id_order, { transaction });
 
-  // If order becomes selesai, send external webhook (non-blocking)
-  try {
-    if (orderWorkflowStatus === 'selesai' || orderBotStatus === 'selesai') {
-  const orderWebhook = require('../utils/orderWebhook');
-  const customer = await models.Customer.findByPk(order.id_customer, { transaction });
-  const phone = customer ? customer.no_hp : null;
-  const customerName = customer ? customer.nama : '';
-  const invoiceUrl = `${process.env.APP_URL || 'http://localhost:3000'}/invoice/${order.no_transaksi}.pdf`;
-  orderWebhook.sendOrderCompletedWebhook(phone, customerName, order.no_transaksi, invoiceUrl).catch(() => {});
-    }
-  } catch (e) {}
+    // If order becomes selesai, send external webhook (non-blocking)
+    try {
+      const skipOrderWebhook = options && options.skipOrderWebhook;
+      // Only send "pesan anda selesai" webhook when the actual `status` column is 'selesai'
+      if (!skipOrderWebhook && reloadedOrder && reloadedOrder.status === 'selesai') {
+        const orderWebhook = require('../utils/orderWebhook');
+        const customer = await models.Customer.findByPk(order.id_customer, { transaction });
+        const phone = customer ? customer.no_hp : null;
+        const customerName = customer ? customer.nama : '';
+        const invoiceUrl = `${process.env.APP_URL || 'http://localhost:3000'}/invoice/${order.no_transaksi}.pdf`;
+        orderWebhook.sendOrderCompletedWebhook(phone, customerName, order.no_transaksi, invoiceUrl).catch(() => {});
+      }
+    } catch (e) {}
 
     // Update piutang for this customer: allocate payments to piutangs (FIFO)
     const customerId = order.id_customer;
@@ -213,9 +225,23 @@ async function syncPaymentEffects(payment, transaction = null) {
         }
       }
     }
+    // return summary so callers can decide whether to send invoice webhook
+    const finalOrder = reloadedOrder || order;
+    const sisaBayar = Number((Number(finalOrder.total_bayar || 0) - Number(totalPaid || 0)).toFixed(2));
+    return {
+      id_order: finalOrder.id_order,
+      no_transaksi: finalOrder.no_transaksi,
+      status: finalOrder.status,
+      status_order: finalOrder.status_order,
+      status_bot: finalOrder.status_bot,
+      isFullyPaid: paymentStatus === 'lunas',
+      totalPaid: Number(totalPaid || 0),
+      sisa_bayar: sisaBayar
+    };
   } catch (err) {
     // don't throw to avoid breaking payment flows; log to console for now
     console.error('syncPaymentEffects error:', err.message || err);
+    return null;
   }
 }
 
@@ -302,11 +328,11 @@ module.exports = {
         });
           // ensure piutang exists if needed, then sync effects (order status, piutang)
             await ensurePiutangForCustomer(payment.id_customer || (payment.Order && payment.Order.id_customer));
-            await syncPaymentEffects(payment);
+            const effects = await syncPaymentEffects(payment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true });
+            // send invoice webhook ONLY when the payment is verified
+          try { if (payment && String(payment.status).toLowerCase() === 'verified') { sendInvoiceWebhook(req.app, payment.no_transaksi || (effects && effects.no_transaksi)); } } catch (e) {}
             // emit payment created/updated
             try { emitPaymentEvent(req.app, payment, 'payment.created'); } catch (e) { /* ignore */ }
-            // If payment created with status verified, trigger invoice webhook
-            try { if (payment.status && String(payment.status).toLowerCase() === 'verified') { sendInvoiceWebhook(req.app, payment.no_transaksi || (payment.Order && payment.Order.no_transaksi)); } } catch (e) {}
         return res.status(201).json(payment);
       }
 
@@ -336,9 +362,9 @@ module.exports = {
         });
   // ensure piutang exists for customer, then sync
   await ensurePiutangForCustomer(payment.Customer ? payment.Customer.id_customer : null);
-  await syncPaymentEffects(payment);
+  const effects = await syncPaymentEffects(payment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true });
+  try { if (payment && String(payment.status).toLowerCase() === 'verified') { sendInvoiceWebhook(req.app, payment.no_transaksi || (effects && effects.no_transaksi)); } } catch(e) {}
   try { emitPaymentEvent(req.app, payment, 'payment.created'); } catch (e) { }
-  try { if (payment.status && String(payment.status).toLowerCase() === 'verified') { sendInvoiceWebhook(req.app, payment.no_transaksi || (payment.Order && payment.Order.no_transaksi)); } } catch (e) {}
         return res.status(201).json(payment);
       }
 
@@ -370,9 +396,9 @@ module.exports = {
         });
   // ensure piutang exists for customer, then sync
   await ensurePiutangForCustomer(payment.Customer ? payment.Customer.id_customer : null);
-  await syncPaymentEffects(payment);
+  const effects = await syncPaymentEffects(payment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true });
+  try { if (payment && String(payment.status).toLowerCase() === 'verified') { sendInvoiceWebhook(req.app, payment.no_transaksi || (effects && effects.no_transaksi)); } } catch(e) {}
   try { emitPaymentEvent(req.app, payment, 'payment.created'); } catch (e) { }
-  try { if (payment.status && String(payment.status).toLowerCase() === 'verified') { sendInvoiceWebhook(req.app, payment.no_transaksi || (payment.Order && payment.Order.no_transaksi)); } } catch (e) {}
         return res.status(201).json(payment);
       }
 
@@ -477,8 +503,9 @@ module.exports = {
       if (!order_id) return res.status(400).json({ error: 'order_id required' });
       const order = await models.Order.findByPk(order_id);
       if (!order) return res.status(404).json({ error: 'Order not found' });
-      const totalPaid = await models.Payment.sum('nominal', { where: { no_transaksi: order.no_transaksi } }) || 0;
-      res.status(200).json({ id_order: order.id_order, no_transaksi: order.no_transaksi, total_bayar: order.total_bayar, total_paid: totalPaid, status_bayar: order.status_bayar });
+  const totalPaid = await models.Payment.sum('nominal', { where: { no_transaksi: order.no_transaksi } }) || 0;
+  const sisaBayar = Number((Number(order.total_bayar || 0) - Number(totalPaid || 0)).toFixed(2));
+  res.status(200).json({ id_order: order.id_order, no_transaksi: order.no_transaksi, total_bayar: order.total_bayar, total_paid: Number(totalPaid || 0), sisa_bayar: sisaBayar, status_bayar: order.status_bayar });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
@@ -517,7 +544,8 @@ module.exports = {
           { model: models.Customer, attributes: ['id_customer', 'nama', 'no_hp'] }
         ]
       });
-      await syncPaymentEffects(updatedPayment);
+  const effects = await syncPaymentEffects(updatedPayment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true });
+    try { if (updatedPayment && String(updatedPayment.status).toLowerCase() === 'verified') { sendInvoiceWebhook(req.app, effects.no_transaksi); } } catch(e) {}
     try { emitPaymentEvent(req.app, updatedPayment, 'payment.updated'); } catch (e) { }
       res.json(updatedPayment);
     } catch (error) {
@@ -553,9 +581,10 @@ module.exports = {
         ]
       });
       // ensure piutang exists for this customer so admin can reconcile later
-      await ensurePiutangForCustomer(order.id_customer);
-      // sync payment effects (update order dp/status and piutangs)
-      await syncPaymentEffects(payment);
+        await ensurePiutangForCustomer(order.id_customer);
+        // sync payment effects (update order dp/status and piutangs)
+  const effects = await syncPaymentEffects(payment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true });
+    try { if (payment && String(payment.status).toLowerCase() === 'verified') { sendInvoiceWebhook(req.app, effects.no_transaksi); } } catch(e) {}
       res.status(201).json({ success: true, message: 'Bukti pembayaran diterima, menunggu verifikasi admin', payment_id: payment.id_payment, payment });
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -594,7 +623,8 @@ module.exports = {
           { model: models.Customer, attributes: ['id_customer', 'nama', 'no_hp'] }
         ]
       });
-      await syncPaymentEffects(updatedPayment);
+  const effects = await syncPaymentEffects(updatedPayment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true });
+    try { if (updatedPayment && String(updatedPayment.status).toLowerCase() === 'verified') { sendInvoiceWebhook(req.app, effects.no_transaksi); } } catch(e) {}
       res.status(200).json(updatedPayment);
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -626,7 +656,8 @@ module.exports = {
           { model: models.Customer, attributes: ['id_customer', 'nama', 'no_hp'] }
         ]
       });
-      await syncPaymentEffects(updatedPayment);
+  const effects = await syncPaymentEffects(updatedPayment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true });
+    try { if (updatedPayment && String(updatedPayment.status).toLowerCase() === 'verified') { sendInvoiceWebhook(req.app, effects.no_transaksi); } } catch(e) {}
     try { emitPaymentEvent(req.app, updatedPayment, 'payment.updated'); } catch (e) { }
       // trigger invoice webhook notify when payment is verified
       try { sendInvoiceWebhook(req.app, updatedPayment.no_transaksi || (updatedPayment.Order && updatedPayment.Order.no_transaksi)); } catch (e) { console.error('sendInvoiceWebhook error', e && e.message ? e.message : e); }
@@ -658,7 +689,8 @@ module.exports = {
           { model: models.Customer, attributes: ['id_customer', 'nama', 'no_hp'] }
         ]
       });
-      await Promise.all(updatedPayments.map(p => syncPaymentEffects(p)));
+  const effectsArr = await Promise.all(updatedPayments.map(p => syncPaymentEffects(p, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true })));
+    try { effectsArr.forEach(e => { if (e && String(e.status).toLowerCase() === 'verified') { try { sendInvoiceWebhook(req.app, e.no_transaksi); } catch(e) {} } }); } catch(e) {}
     try { updatedPayments.forEach(p => emitPaymentEvent(req.app, p, 'payment.updated')); } catch (e) { }
     // trigger invoice webhook for any updated payments that are verified
     try { updatedPayments.forEach(p => { if (p.status && String(p.status).toLowerCase() === 'verified') { try { sendInvoiceWebhook(req.app, p.no_transaksi || (p.Order && p.Order.no_transaksi)); } catch (e) {} } }); } catch (e) {}
@@ -688,7 +720,8 @@ module.exports = {
       });
       // ensure piutang exists and sync effects
       await ensurePiutangForCustomer(updatedPayment.id_customer || (updatedPayment.Order && updatedPayment.Order.id_customer));
-      await syncPaymentEffects(updatedPayment);
+  const effects = await syncPaymentEffects(updatedPayment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true });
+  try { if (updatedPayment && String(updatedPayment.status).toLowerCase() === 'verified') { sendInvoiceWebhook(req.app, updatedPayment.no_transaksi || (effects && effects.no_transaksi)); } } catch(e) {}
     try { emitPaymentEvent(req.app, updatedPayment, 'payment.updated'); } catch (e) { }
       // trigger invoice webhook notify when payment is verified (non-blocking)
       try {
@@ -729,9 +762,9 @@ module.exports = {
           { model: models.Customer, attributes: ['id_customer', 'nama', 'no_hp'] }
         ]
       });
-  await Promise.all(updatedPayments.map(p => syncPaymentEffects(p)));
-  // trigger invoice webhook for any updated payments that are verified
-  try { updatedPayments.forEach(p => { if (p.status && String(p.status).toLowerCase() === 'verified') { try { sendInvoiceWebhook(req.app, p.no_transaksi || (p.Order && p.Order.no_transaksi)); } catch (e) {} } }); } catch (e) {}
+  const effectsArr = await Promise.all(updatedPayments.map(p => syncPaymentEffects(p, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true })));
+  // trigger invoice webhook ONLY for payments that are verified
+  try { updatedPayments.forEach(p => { if (p && String(p.status).toLowerCase() === 'verified') { try { sendInvoiceWebhook(req.app, p.no_transaksi || (p.Order && p.Order.no_transaksi)); } catch (e) {} } }); } catch (e) {}
   res.status(200).json(updatedPayments);
     } catch (error) {
       res.status(500).json({ error: error.message });

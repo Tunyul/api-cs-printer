@@ -22,6 +22,7 @@ async function confirmPrompt(question) {
 async function run() {
   try {
     const sequelize = models.sequelize;
+    const autoYes = process.argv.includes('--yes') || process.env.TRUNCATE_YES === '1';
     const toTruncateNames = ['OrderDetail', 'Order', 'Payment', 'Piutang'];
     const available = Object.keys(models).filter(k => ['sequelize','Sequelize'].indexOf(k)===-1);
     console.log('Available models:', available);
@@ -31,10 +32,44 @@ async function run() {
       console.warn('Warning: some expected models are not present in models index:', missing);
     }
 
-    const ans = await confirmPrompt('This will TRUNCATE OrderDetail, Order, Payment, Piutang. Type YES to continue: ');
-    if (ans.trim() !== 'YES') {
+    let ans = 'YES';
+    if (!autoYes) {
+      ans = await confirmPrompt('This will TRUNCATE OrderDetail, Order, Payment, Piutang. Type YES to continue: ');
+    } else {
+      console.log('Auto-confirm enabled (--yes or TRUNCATE_YES=1). Proceeding with truncation.');
+    }
+    if ((ans || '').trim() !== 'YES') {
       console.log('Aborted. No changes made.');
       process.exit(0);
+    }
+
+    // Optionally create a mysqldump backup for the tables before truncation
+    const noBackup = process.argv.includes('--no-backup');
+    const dialect = sequelize.getDialect();
+    if (!noBackup && dialect === 'mysql') {
+      try {
+        const { execSync } = require('child_process');
+        const path = require('path');
+        const fs = require('fs');
+        const backupDir = path.resolve(__dirname, '..', 'backups');
+        if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+        const ts = new Date().toISOString().replace(/[:.]/g,'-');
+        const backupFile = path.join(backupDir, `orders-backup-${ts}.sql`);
+        const dbcfg = require('../src/config/database');
+        const tables = toTruncateNames.map(n => {
+          const m = models[n];
+          return m && m.tableName ? m.tableName : null;
+        }).filter(Boolean).join(' ');
+        if (tables.length > 0) {
+          console.log('Creating mysqldump backup to', backupFile);
+          const env = Object.assign({}, process.env, { MYSQL_PWD: dbcfg.password });
+          const cmd = `mysqldump --host=${dbcfg.host} -u ${dbcfg.username} ${dbcfg.database} ${tables} > ${backupFile}`;
+          execSync(cmd, { env, stdio: 'inherit', shell: true });
+          console.log('Backup saved to', backupFile);
+        }
+      } catch (e) {
+        console.warn('Could not create mysqldump backup:', e && e.message ? e.message : e);
+      }
     }
 
     // Run in a transaction; temporarily disable FK checks for MySQL
