@@ -24,7 +24,7 @@ class PiutangController {
 
       // Always return all piutangs (no pagination)
       const piutangs = await Piutang.findAll({
-        attributes: ['id_piutang', 'id_customer', 'jumlah_piutang', 'tanggal_piutang', 'status', 'keterangan', 'created_at', 'updated_at'],
+        attributes: ['id_piutang', 'id_customer', 'jumlah_piutang', 'paid', 'tanggal_piutang', 'status', 'keterangan', 'id_order', 'created_at', 'updated_at'],
         include: [{
           model: Customer,
           attributes: ['id_customer', 'nama', 'no_hp']
@@ -211,11 +211,12 @@ class PiutangController {
       const { id } = req.params;
       
       const piutangs = await Piutang.findAll({
-        include: [{
-          model: Customer,
-          attributes: ['id_customer', 'nama', 'no_hp']
-        }],
-        where: { id_customer: id },
+          attributes: ['id_piutang', 'id_customer', 'jumlah_piutang', 'paid', 'tanggal_piutang', 'status', 'keterangan', 'id_order', 'created_at', 'updated_at'],
+          include: [{
+            model: Customer,
+            attributes: ['id_customer', 'nama', 'no_hp']
+          }],
+          where: { id_customer: id },
         order: [['created_at', 'DESC']]
       });
 

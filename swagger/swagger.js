@@ -163,10 +163,13 @@ const options = {
           type: 'object',
           properties: {
             id_piutang: { type: 'integer' },
+            id_customer: { type: 'integer' },
+            jumlah_piutang: { type: 'number', format: 'decimal' },
+            paid: { type: 'number', format: 'decimal' },
+            tanggal_piutang: { type: 'string', format: 'date-time' },
+            status: { type: 'string', enum: ['belum_lunas','lunas','terlambat'] },
+            keterangan: { type: 'string' },
             id_order: { type: 'integer' },
-            total_piutang: { type: 'number', format: 'decimal' },
-            tanggal_jatuh_tempo: { type: 'string', format: 'date-time' },
-            status_lunas: { type: 'string' },
             created_at: { type: 'string', format: 'date-time' },
             updated_at: { type: 'string', format: 'date-time' }
           }

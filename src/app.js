@@ -43,6 +43,9 @@ app.use('/health', require('./routes/health'));
 app.use('/api/notifications', require('./routes/notification'));
 app.use('/api/uix', require('./routes/uix'));
 
+// Internal monitor for quick debugging (not exposed in swagger)
+app.use('/internal/monitor', require('./routes/internalMonitor'));
+
 app.get('/', (req, res) => {
   res.json({
     message: 'Cukong API is running',
