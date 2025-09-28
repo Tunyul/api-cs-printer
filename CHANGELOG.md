@@ -58,5 +58,10 @@
 
 ### Changed
 - Updated controller `src/controllers/piutangController.js` to include `Order` in `find` queries for `getAllPiutangs`, `getPiutangById`, `createPiutang`, `updatePiutang`, `getPiutangsByCustomerId`, and `getOverduePiutangs`.
+## [2.0.4] - 2025-09-28
+### Changed
+- Updated invoice template to display a green "Lunas" badge when an order is fully paid and regenerated PDFs accordingly.
+### Maintenance
+- Bumped package version to 2.0.4 and applied minor documentation updates.
 
 
