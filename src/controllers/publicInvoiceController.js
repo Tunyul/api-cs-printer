@@ -71,8 +71,10 @@ async function getInvoicePdf(req, res) {
     // store in cache
     cache.set(key, { buffer, expires: Date.now() + DEFAULT_TTL });
 
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="invoice-${no}.pdf"`);
+  res.setHeader('Content-Type', 'application/pdf');
+  // allow forcing download via ?download=1 (useful when clients/Chrome block inline preview)
+  const forceDownload = req && req.query && (req.query.download === '1' || String(req.query.download).toLowerCase() === 'true');
+  res.setHeader('Content-Disposition', `${forceDownload ? 'attachment' : 'inline'}; filename="invoice-${no}.pdf"`);
     res.setHeader('Cache-Control', `public, max-age=${Math.floor(DEFAULT_TTL/1000)}`);
     return res.send(buffer);
   } catch (err) {

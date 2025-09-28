@@ -217,7 +217,7 @@ function livePage(req, res) {
       </footer>
     </div>
 
-    <script>
+  <script>
   const preview = document.getElementById('jsonPreview');
       const pidEl = document.getElementById('pid');
       const portEl = document.getElementById('port');
@@ -228,6 +228,87 @@ function livePage(req, res) {
       const lastUpdate = document.getElementById('lastUpdate');
   // latency display
   const latencyEl = document.createElement('div'); latencyEl.className='small'; latencyEl.style.marginTop='8px'; document.querySelector('.card').appendChild(latencyEl);
+
+  // --- Lightweight inline canvas chart (no external deps) ---
+  const chartCard = document.createElement('div'); chartCard.className='card'; chartCard.style.marginTop='12px';
+  chartCard.innerHTML = '<h3>Live chart</h3><div style="height:180px;background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.00));padding:6px;border-radius:6px"><canvas id="liveChart" style="width:100%;height:180px;display:block"></canvas></div>';
+  // insert at the top of the left column so it's immediately visible
+  const leftCol = document.querySelector('section');
+  if (leftCol && leftCol.firstChild) leftCol.insertBefore(chartCard, leftCol.firstChild);
+  else if (leftCol) leftCol.appendChild(chartCard);
+
+  const maxPoints = 30;
+  const sockData = Array.from({length: maxPoints}, () => null);
+  const notifData = Array.from({length: maxPoints}, () => null);
+  const timeLabels = Array.from({length: maxPoints}, () => '');
+  const canvas = document.getElementById('liveChart');
+  const ctx = canvas.getContext && canvas.getContext('2d');
+  if (canvas && canvas.style) canvas.style.border = '1px solid rgba(255,255,255,0.06)';
+  function resizeCanvas() {
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = Math.max(300, Math.floor(rect.width));
+    canvas.height = Math.max(120, Math.floor(rect.height));
+  }
+  function drawChart() {
+    if (!ctx) return;
+    resizeCanvas();
+    // clear
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    // background grid
+    ctx.fillStyle = 'rgba(255,255,255,0.02)';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    const w = canvas.width, h = canvas.height;
+    const pad = 8;
+    const innerW = w - pad*2;
+    const innerH = h - pad*2;
+    // compute ranges
+    const merged = sockData.concat(notifData).filter(v => typeof v === 'number');
+    const maxV = merged.length ? Math.max(...merged) : 1;
+    const scale = maxV > 0 ? innerH / maxV : 1;
+
+    function plotLine(data, color) {
+      ctx.beginPath();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      let started = false;
+      for (let i=0;i<data.length;i++) {
+        const v = data[i];
+        const x = pad + (i/(maxPoints-1)) * innerW;
+        const y = pad + innerH - ((typeof v === 'number' ? v : 0) * scale);
+        if (!started) { ctx.moveTo(x,y); started = true; } else { ctx.lineTo(x,y); }
+      }
+      ctx.stroke();
+    }
+
+    // grid lines
+    ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+    ctx.lineWidth = 1;
+    for (let i=0;i<=4;i++){
+      const yy = pad + (i/4)*innerH;
+      ctx.beginPath(); ctx.moveTo(pad, yy); ctx.lineTo(pad+innerW, yy); ctx.stroke();
+    }
+
+    // draw notif (green) then sockets (cyan) so sockets on top
+    plotLine(notifData, '#10b981');
+    plotLine(sockData, '#06b6d4');
+
+    // legend
+    ctx.fillStyle = '#94a3b8'; ctx.font = '12px sans-serif';
+    ctx.fillText('Sockets', pad+4, pad+12); ctx.fillStyle='#06b6d4'; ctx.fillRect(pad, pad+4, 10,6);
+    ctx.fillStyle = '#94a3b8'; ctx.fillText('Notifications', pad+80, pad+12); ctx.fillStyle='#10b981'; ctx.fillRect(pad+72, pad+4, 10,6);
+  }
+
+  // expose small update function
+  function updateChart(sockCount, notifCount) {
+    timeLabels.push(new Date().toLocaleTimeString());
+    timeLabels.splice(0, timeLabels.length - maxPoints);
+    sockData.push(sockCount); if (sockData.length>maxPoints) sockData.shift();
+    notifData.push(notifCount); if (notifData.length>maxPoints) notifData.shift();
+    drawChart();
+  }
+
+  // initial draw so the canvas is visible even before first SSE update
+  try { drawChart(); } catch (e) { /* ignore */ }
 
       function humanBytes(n){ if(!n && n!==0) return '-'; const units=['B','KB','MB','GB']; let i=0; let v=n; while(v>=1024 && i<units.length-1){ v/=1024;i++; } return Math.round(v*10)/10 + units[i]; }
 
@@ -249,7 +330,24 @@ function livePage(req, res) {
         setStatus(true);
         connected = true;
         btnConnect.textContent = 'Disconnect';
-        es.onmessage = function(e){ try { const d = JSON.parse(e.data); pidEl.textContent = d.proc.pid || '-'; portEl.textContent = (d.proc.env && d.proc.env.PORT) || '-'; uptimeEl.textContent = d.proc.uptime_s || '-'; rssEl.textContent = humanBytes(d.proc.memory && d.proc.memory.rss); nodeverEl.textContent = d.proc.node_version || '-'; renderRooms(d.sockets && d.sockets.rooms); renderNotifs(d.notifications); preview.textContent = JSON.stringify(d, null, 2); lastUpdate.textContent = new Date().toLocaleString(); if(d.server_ts){ const serverTs=new Date(d.server_ts).getTime(); const now=Date.now(); latencyEl.textContent = 'Latency: '+(now-serverTs)+' ms'; } } catch(err){ console.error(err); } };
+        es.onmessage = function(e){ try { const d = JSON.parse(e.data);
+          pidEl.textContent = d.proc.pid || '-';
+          portEl.textContent = (d.proc.env && d.proc.env.PORT) || '-';
+          uptimeEl.textContent = d.proc.uptime_s || '-';
+          rssEl.textContent = humanBytes(d.proc.memory && d.proc.memory.rss);
+          nodeverEl.textContent = d.proc.node_version || '-';
+          renderRooms(d.sockets && d.sockets.rooms);
+          renderNotifs(d.notifications);
+          preview.textContent = JSON.stringify(d, null, 2);
+          lastUpdate.textContent = new Date().toLocaleString();
+          if(d.server_ts){ const serverTs=new Date(d.server_ts).getTime(); const now=Date.now(); latencyEl.textContent = 'Latency: '+(now-serverTs)+' ms'; }
+          // update inline chart
+          try {
+            const sockCount = (d.sockets && d.sockets.connected_count) || 0;
+            const notifCount = (d.notifications && d.notifications.length) || 0;
+            updateChart(sockCount, notifCount);
+          } catch (chartErr) { console.warn('chart update failed', chartErr); }
+        } catch(err){ console.error(err); } };
         es.onerror = function(err){ console.error('SSE error', err); setStatus(false); connected=false; try{ es.close && es.close(); }catch(e){}; setTimeout(()=>{ start(); }, 2000); };
       }
 
