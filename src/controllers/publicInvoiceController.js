@@ -222,3 +222,20 @@ function escapeHtml(str) {
 
 // Export landing handler alongside existing exports
 module.exports = { getInvoicePdf, postNotifyWebhook, getInvoiceLanding };
+
+// Helper to clear cached PDF buffer for a transaction (used when invoices change)
+function clearInvoicePdfCache(no_transaksi) {
+  try {
+    if (!no_transaksi) return false;
+    const key = `pdf:${no_transaksi}`;
+    if (cache.has(key)) {
+      cache.delete(key);
+      return true;
+    }
+    return false;
+  } catch (e) {
+    return false;
+  }
+}
+
+module.exports.clearInvoicePdfCache = clearInvoicePdfCache;

@@ -18,17 +18,25 @@
     .right { text-align:right }
     .payments { margin-top:18px }
     small.note { color:#6b7280 }
-    .logo-badge { background:#fb923c; color:white; padding:6px 10px; border-radius:999px; font-weight:700 }
+    .logo-badge { padding:6px 10px; border-radius:999px; font-weight:700; color: #fff }
+    .badge-dp { background:#fb923c }
+    .badge-lunas { background:#16a34a }
   </style>
 </head>
 <body>
+  <% 
+    const total = Number(order.total_harga || order.total_bayar || 0);
+    const totalPaid = (payments || []).reduce((s,p)=>s+Number(p.nominal||0),0);
+    const sisa = total - totalPaid;
+    const isLunas = (order && String(order.status_bayar || '').toLowerCase() === 'lunas') || sisa <= 0;
+  %>
   <div class="container">
     <div class="header">
       <div>
         <h1>Invoice</h1>
         <div class="muted">No. <%= order.no_transaksi %></div>
       </div>
-      <div class="logo-badge">DP</div>
+      <div class="logo-badge <%= isLunas ? 'badge-lunas' : 'badge-dp' %>"><%= isLunas ? 'Lunas' : 'DP' %></div>
     </div>
 
     <div class="customer">

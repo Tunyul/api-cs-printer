@@ -224,13 +224,18 @@ async function syncPaymentEffects(payment, transaction = null, options = {}) {
       const skipOrderWebhook = options && options.skipOrderWebhook;
       // Only send "pesan anda selesai" webhook when the actual `status` column is 'selesai'
       if (!skipOrderWebhook && reloadedOrder && reloadedOrder.status === 'selesai') {
-        const orderWebhook = require('../utils/orderWebhook');
-        const customer = await models.Customer.findByPk(order.id_customer, { transaction });
-        const phone = customer ? customer.no_hp : null;
-        const customerName = customer ? customer.nama : '';
-  const invoiceUrl = `${process.env.APP_URL || 'http://localhost:3000'}/invoice/${order.no_transaksi}.pdf`;
-        orderWebhook.sendOrderCompletedWebhook(phone, customerName, order.no_transaksi, invoiceUrl).catch(() => {});
-      }
+          // Clear cached PDF so regenerated invoice reflects latest payments
+          try {
+            const publicInvoice = require('./publicInvoiceController');
+            if (publicInvoice && publicInvoice.clearInvoicePdfCache) publicInvoice.clearInvoicePdfCache(order.no_transaksi);
+          } catch (e) {}
+          const orderWebhook = require('../utils/orderWebhook');
+          const customer = await models.Customer.findByPk(order.id_customer, { transaction });
+          const phone = customer ? customer.no_hp : null;
+          const customerName = customer ? customer.nama : '';
+    const invoiceUrl = `${process.env.APP_URL || 'http://localhost:3000'}/invoice/${order.no_transaksi}.pdf`;
+          orderWebhook.sendOrderCompletedWebhook(phone, customerName, order.no_transaksi, invoiceUrl).catch(() => {});
+        }
     } catch (e) {}
 
   // Update piutang for this customer: allocate payments to piutangs (FIFO)
