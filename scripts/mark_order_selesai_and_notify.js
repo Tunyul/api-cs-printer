@@ -23,7 +23,8 @@ const NO_TRANSAKSI = process.argv[2] || 'TRX-24092025-8752-CICI';
     const customer = order.Customer || (order.id_customer ? await models.Customer.findByPk(order.id_customer) : null);
     const phone = customer ? customer.no_hp : null;
     const name = customer ? customer.nama : '';
-    const invoiceUrl = `${process.env.APP_URL || 'http://localhost:3000'}/invoice/${order.no_transaksi}.pdf`;
+  const getAppUrl = require('../src/utils/getAppUrl');
+  const invoiceUrl = `${getAppUrl()}/invoice/${order.no_transaksi}.pdf`;
 
     console.log('Calling sendOrderCompletedWebhook to', phone);
     const ok = await sendOrderCompletedWebhook(phone, name, order.no_transaksi, invoiceUrl);

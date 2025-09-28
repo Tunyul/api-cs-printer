@@ -491,7 +491,8 @@ exports.updateOrder = async (req, res) => {
   const customer = updatedOrder.id_customer ? (await models.Customer.findByPk(updatedOrder.id_customer)) : null;
   const phone = customer ? customer.no_hp : null;
   const customerName = customer ? customer.nama : '';
-  const invoiceUrl = `${process.env.APP_URL || 'http://localhost:3000'}/invoice/${updatedOrder.no_transaksi}.pdf`;
+  const getAppUrl = require('../utils/getAppUrl');
+  const invoiceUrl = `${getAppUrl()}/invoice/${updatedOrder.no_transaksi}.pdf`;
   // temporary debug log to verify controller triggers webhook
   try { const fs = require('fs'); fs.appendFileSync('server.log', `[${new Date().toISOString()}] controller-before-order-webhook ${updatedOrder.no_transaksi} phone=${phone} name=${customerName}\n`); } catch(e){}
   orderWebhook.sendOrderCompletedWebhook(phone, customerName, updatedOrder.no_transaksi, invoiceUrl).catch(() => {});
@@ -808,7 +809,8 @@ exports.updateOrderByNoTransaksi = async (req, res) => {
   const customer = updatedOrder.id_customer ? await models.Customer.findByPk(updatedOrder.id_customer) : null;
   const phone = customer ? customer.no_hp : null;
   const customerName = customer ? customer.nama : '';
-  const invoiceUrl = `${process.env.APP_URL || 'http://localhost:3000'}/invoice/${updatedOrder.no_transaksi}.pdf`;
+  const getAppUrl = require('../utils/getAppUrl');
+  const invoiceUrl = `${getAppUrl()}/invoice/${updatedOrder.no_transaksi}.pdf`;
   // temporary debug log to verify controller triggers webhook
   try { const fs = require('fs'); fs.appendFileSync('server.log', `[${new Date().toISOString()}] controller-before-order-webhook ${updatedOrder.no_transaksi} phone=${phone} name=${customerName}\n`); } catch(e){}
   orderWebhook.sendOrderCompletedWebhook(phone, customerName, updatedOrder.no_transaksi, invoiceUrl).catch(() => {});
@@ -895,23 +897,50 @@ exports.updateOrderDetailsByNoTransaksi = async (req, res) => {
     // Jika order_details masih kosong, buat baru
     if (!oldDetails || oldDetails.length === 0) {
       let total_bayar = 0;
-      // unit_area is expected to be present on product after migration; no parsing here.
+      // unit_area is expected to be present on product after migration; parse dimensions and fallback similar to bot POST
       for (const item of order_details) {
         const product = await models.Product.findByPk(item.id_produk);
         const qty = Number(item.qty || 1);
-  const prodPlain = product.toJSON ? product.toJSON() : Object.assign({}, product);
-        const dimSource = item.dimension || item.size || { width: item.width, height: item.height, unit: item.unit };
+        const prodPlain = product.toJSON ? product.toJSON() : Object.assign({}, product);
+        const hargaPerPcs = Number(prodPlain.harga_per_pcs || 0);
         const hargaPerM2 = Number(prodPlain.harga_per_m2 || 0);
+        // parse dimension source: accept item.dimension {w,h,unit}, item.size '3x3m' or width/height
+        function parseDimension(d) {
+          if (!d) return null;
+          if (typeof d === 'object' && (d.w != null || d.h != null)) return { w: Number(d.w || d.width), h: Number(d.h || d.height), unit: d.unit || 'm' };
+          if (typeof d === 'string') {
+            const m = d.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)(m|cm)?$/);
+            if (m) return { w: Number(m[1]), h: Number(m[2]), unit: m[3] || 'm' };
+          }
+          if (d && d.width != null && d.height != null) return { w: Number(d.width), h: Number(d.height), unit: d.unit || 'm' };
+          return null;
+        }
+        const dimSource = item.dimension || item.size || { width: item.width, height: item.height, unit: item.unit };
+        const parsed = parseDimension(dimSource);
         let harga_satuan = 0;
         let subtotal_item = 0;
-        if (hargaPerM2 > 0) {
-          const computeRes = require('../utils/priceCalculator').computeOrderDetailPrice(prodPlain, { dimension: (typeof dimSource === 'object' ? dimSource : (dimSource || null)) }, qty);
+        if (parsed && hargaPerM2 > 0) {
+          const computeRes = require('../utils/priceCalculator').computeOrderDetailPrice(prodPlain, { dimension: parsed }, qty);
           harga_satuan = computeRes.harga_satuan;
           subtotal_item = computeRes.subtotal_item;
+        } else if (hargaPerM2 > 0) {
+          // fallback: if product has unit_area we can compute without explicit dimension
+          if (prodPlain.unit_area != null) {
+            const computeRes = require('../utils/priceCalculator').computeOrderDetailPrice(prodPlain, { dimension: null }, qty);
+            harga_satuan = computeRes.harga_satuan;
+            subtotal_item = computeRes.subtotal_item;
+          } else if (hargaPerPcs > 0) {
+            harga_satuan = hargaPerPcs;
+            subtotal_item = hargaPerPcs * qty;
+          } else {
+            return res.status(400).json({ error: `Dimension required for product ${prodPlain.nama_produk || prodPlain.nama || prodPlain.id_produk} (id ${prodPlain.id_produk || prodPlain.id}) priced per m2` });
+          }
+        } else if (hargaPerPcs > 0) {
+          harga_satuan = hargaPerPcs;
+          subtotal_item = hargaPerPcs * qty;
         } else {
-          const harga = Number(prodPlain.harga_per_pcs || 0);
-          harga_satuan = harga;
-          subtotal_item = harga * qty;
+          harga_satuan = 0;
+          subtotal_item = 0;
         }
         total_bayar += subtotal_item;
         await models.OrderDetail.create({
@@ -932,23 +961,48 @@ exports.updateOrderDetailsByNoTransaksi = async (req, res) => {
     // Jika sudah ada order_details, replace dengan data baru
     await models.OrderDetail.destroy({ where: { id_order: order.id_order } });
     let total_bayar = 0;
-    // unit_area is expected to be present on product after migration; no parsing of product.ukuran_standar here.
+    // unit_area is expected to be present on product after migration; parse dimensions and fallback similar to bot POST
     for (const item of order_details) {
       const product = await models.Product.findByPk(item.id_produk);
       const qty = Number(item.qty || 1);
-  const prodPlain = product.toJSON ? product.toJSON() : Object.assign({}, product);
-      const dimSource = item.dimension || item.size || { width: item.width, height: item.height, unit: item.unit };
+      const prodPlain = product.toJSON ? product.toJSON() : Object.assign({}, product);
+      const hargaPerPcs = Number(prodPlain.harga_per_pcs || 0);
       const hargaPerM2 = Number(prodPlain.harga_per_m2 || 0);
+      function parseDimension(d) {
+        if (!d) return null;
+        if (typeof d === 'object' && (d.w != null || d.h != null)) return { w: Number(d.w || d.width), h: Number(d.h || d.height), unit: d.unit || 'm' };
+        if (typeof d === 'string') {
+          const m = d.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)(m|cm)?$/);
+          if (m) return { w: Number(m[1]), h: Number(m[2]), unit: m[3] || 'm' };
+        }
+        if (d && d.width != null && d.height != null) return { w: Number(d.width), h: Number(d.height), unit: d.unit || 'm' };
+        return null;
+      }
+      const dimSource = item.dimension || item.size || { width: item.width, height: item.height, unit: item.unit };
+      const parsed = parseDimension(dimSource);
       let harga_satuan = 0;
       let subtotal_item = 0;
-      if (hargaPerM2 > 0) {
-        const computeRes = require('../utils/priceCalculator').computeOrderDetailPrice(prodPlain, { dimension: (typeof dimSource === 'object' ? dimSource : (dimSource || null)) }, qty);
+      if (parsed && hargaPerM2 > 0) {
+        const computeRes = require('../utils/priceCalculator').computeOrderDetailPrice(prodPlain, { dimension: parsed }, qty);
         harga_satuan = computeRes.harga_satuan;
         subtotal_item = computeRes.subtotal_item;
+      } else if (hargaPerM2 > 0) {
+        if (prodPlain.unit_area != null) {
+          const computeRes = require('../utils/priceCalculator').computeOrderDetailPrice(prodPlain, { dimension: null }, qty);
+          harga_satuan = computeRes.harga_satuan;
+          subtotal_item = computeRes.subtotal_item;
+        } else if (hargaPerPcs > 0) {
+          harga_satuan = hargaPerPcs;
+          subtotal_item = hargaPerPcs * qty;
+        } else {
+          return res.status(400).json({ error: `Dimension required for product ${prodPlain.nama_produk || prodPlain.nama || prodPlain.id_produk} (id ${prodPlain.id_produk || prodPlain.id}) priced per m2` });
+        }
+      } else if (hargaPerPcs > 0) {
+        harga_satuan = hargaPerPcs;
+        subtotal_item = hargaPerPcs * qty;
       } else {
-        const harga = Number(prodPlain.harga_per_pcs || 0);
-        harga_satuan = harga;
-        subtotal_item = harga * qty;
+        harga_satuan = 0;
+        subtotal_item = 0;
       }
       total_bayar += subtotal_item;
       await models.OrderDetail.create({

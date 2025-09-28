@@ -30,16 +30,23 @@ class PiutangController {
           attributes: ['id_customer', 'nama', 'no_hp']
         }, {
           model: Order,
-          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'status']
+          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'dp_bayar', 'status']
         }],
         where: whereClause,
         order: [['created_at', 'DESC']]
       });
 
+      // attach dp_bayar as top-level field for convenience
+      const data = piutangs.map(p => {
+        const plain = p.toJSON ? p.toJSON() : p;
+        plain.dp_bayar = (plain.Order && Number(plain.Order.dp_bayar || 0)) || 0;
+        return plain;
+      });
+
       return res.status(200).json({
         success: true,
-        data: piutangs,
-        meta: { total: piutangs.length }
+        data,
+        meta: { total: data.length }
       });
     } catch (error) {
       res.status(500).json({
@@ -60,7 +67,7 @@ class PiutangController {
           attributes: ['id_customer', 'nama', 'no_hp']
         }, {
           model: Order,
-          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'status']
+          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'dp_bayar', 'status']
         }],
         where: { id_piutang: id }
       });
@@ -68,9 +75,11 @@ class PiutangController {
       if (!piutang) {
         return res.status(404).json({ error: 'Piutang not found' });
       }
+      const plain = piutang.toJSON ? piutang.toJSON() : piutang;
+      plain.dp_bayar = (plain.Order && Number(plain.Order.dp_bayar || 0)) || 0;
       res.status(200).json({
         success: true,
-        data: piutang
+        data: plain
       });
     } catch (error) {
       res.status(500).json({
@@ -103,7 +112,7 @@ class PiutangController {
           attributes: ['id_customer', 'nama', 'no_hp']
         }, {
           model: Order,
-          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'status']
+          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'dp_bayar', 'status']
         }],
         where: { id_piutang: piutang.id_piutang }
       });
@@ -126,10 +135,12 @@ class PiutangController {
         console.error('emit piutang.created error', e && e.message ? e.message : e);
       }
 
+      const plainCreated = piutangWithCustomer.toJSON ? piutangWithCustomer.toJSON() : piutangWithCustomer;
+      plainCreated.dp_bayar = (plainCreated.Order && Number(plainCreated.Order.dp_bayar || 0)) || 0;
       res.status(201).json({
         success: true,
         message: 'Piutang created successfully',
-        data: piutangWithCustomer
+        data: plainCreated
       });
     } catch (error) {
       res.status(500).json({
@@ -161,7 +172,7 @@ class PiutangController {
           attributes: ['id_customer', 'nama', 'no_hp']
         }, {
           model: Order,
-          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'status']
+          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'dp_bayar', 'status']
         }],
         where: { id_piutang: id }
       });
@@ -178,10 +189,12 @@ class PiutangController {
         console.error('emit piutang.updated error', e && e.message ? e.message : e);
       }
 
+      const plainUpdated = piutangWithCustomer.toJSON ? piutangWithCustomer.toJSON() : piutangWithCustomer;
+      plainUpdated.dp_bayar = (plainUpdated.Order && Number(plainUpdated.Order.dp_bayar || 0)) || 0;
       res.json({
         success: true,
         message: 'Piutang updated successfully',
-        data: piutangWithCustomer
+        data: plainUpdated
       });
     } catch (error) {
       res.status(500).json({
@@ -229,7 +242,7 @@ class PiutangController {
             attributes: ['id_customer', 'nama', 'no_hp']
           }, {
             model: Order,
-            attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'status']
+            attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'dp_bayar', 'status']
           }],
           where: { id_customer: id },
         order: [['created_at', 'DESC']]
@@ -238,9 +251,14 @@ class PiutangController {
       if (!piutangs || piutangs.length === 0) {
         return res.status(404).json({ error: 'No piutang found for this customer' });
       }
+      const data = piutangs.map(p => {
+        const plain = p.toJSON ? p.toJSON() : p;
+        plain.dp_bayar = (plain.Order && Number(plain.Order.dp_bayar || 0)) || 0;
+        return plain;
+      });
       res.status(200).json({
         success: true,
-        data: piutangs
+        data
       });
     } catch (error) {
       res.status(500).json({
@@ -262,7 +280,7 @@ class PiutangController {
           attributes: ['id_customer', 'nama', 'no_hp']
         }, {
           model: Order,
-          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'status']
+          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'dp_bayar', 'status']
         }],
         where: {
           tanggal_jatuh_tempo: { [Op.lt]: now },
@@ -274,9 +292,14 @@ class PiutangController {
       if (!overduePiutangs || overduePiutangs.length === 0) {
         return res.status(404).json({ error: 'No overdue piutang found' });
       }
+      const data = overduePiutangs.map(p => {
+        const plain = p.toJSON ? p.toJSON() : p;
+        plain.dp_bayar = (plain.Order && Number(plain.Order.dp_bayar || 0)) || 0;
+        return plain;
+      });
       res.status(200).json({
         success: true,
-        data: overduePiutangs
+        data
       });
     } catch (error) {
       res.status(500).json({

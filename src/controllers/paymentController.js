@@ -94,9 +94,10 @@ async function sendInvoiceWebhook(app, no_transaksi) {
 
     const custPhone = customer && customer.no_hp ? String(customer.no_hp) : '';
     // Minimal payload expected by FE/n8n: only phone and invoice_url
+    const getAppUrl = require('../utils/getAppUrl');
     const payload = {
       phone: custPhone,
-      invoice_url: `${process.env.APP_URL || `http://localhost:3000`}/invoice/${order.no_transaksi}.pdf`
+      invoice_url: `${getAppUrl()}/invoice/${order.no_transaksi}.pdf`
     };
 
     const webhookUrl = process.env.INVOICE_WEBHOOK_URL;
@@ -232,28 +233,39 @@ async function syncPaymentEffects(payment, transaction = null, options = {}) {
       }
     } catch (e) {}
 
-    // Update piutang for this customer: allocate payments to piutangs (FIFO)
-    const customerId = order.id_customer;
-    if (customerId) {
+  // Update piutang for this customer: allocate payments to piutangs (FIFO)
+  // Derive customerId defensively from order or payment (if available). If
+  // we cannot determine a customerId, skip allocation to avoid passing
+  // undefined into Sequelize where clauses.
+  const customerId = (order && order.id_customer) || (payment && payment.id_customer) || (payment && payment.Customer && payment.Customer.id_customer) || null;
+  if (customerId) {
       // attempt to get customer's phone to include payments referenced by no_hp
-  const customer = await models.Customer.findByPk(customerId, { transaction });
-  const customerPhone = customer ? customer.no_hp : null;
+    const customer = await models.Customer.findByPk(customerId, { transaction });
+    const customerPhone = customer ? customer.no_hp : null;
 
       // compute total payments available for this customer (only verified payments):
-      // sum payments where no_transaksi belongs to customer's orders OR payment.no_hp matches
+      // By default this used to allocate using the SUM of all payments for the customer.
+      // Change: when this function is called for a specific payment (usePaymentAmount=true)
+      // allocate only from that payment's nominal so allocation history is attributed
+      // to the actual payment that provided the funds.
       const customerOrders = await models.Order.findAll({ where: { id_customer: customerId }, attributes: ['no_transaksi'], transaction });
       const orderNos = customerOrders.map(o => o.no_transaksi).filter(Boolean);
-      // Sum payments for this customer (by order numbers or phone); include all statuses
-      const paymentWhere = {
-        [Op.or]: [
-          ...(orderNos.length > 0 ? [{ no_transaksi: orderNos }] : []),
-          ...(customerPhone ? [{ no_hp: customerPhone }] : [])
-        ]
-      };
-      const paymentsSum = await models.Payment.sum('nominal', { where: paymentWhere, transaction }) || 0;
 
-      // allocate available funds to piutangs in FIFO order (by created_at)
-      let remainingFunds = Number(paymentsSum || 0);
+      // If caller requested to use only the passed payment's amount, use that.
+      let remainingFunds = 0;
+      if (options && options.usePaymentAmount && payment) {
+        remainingFunds = Number(payment.nominal || 0);
+      } else {
+        // Sum payments for this customer (by order numbers or phone); include all statuses
+        const paymentWhere = {
+          [Op.or]: [
+            ...(orderNos.length > 0 ? [{ no_transaksi: orderNos }] : []),
+            ...(customerPhone ? [{ no_hp: customerPhone }] : [])
+          ]
+        };
+        const paymentsSum = await models.Payment.sum('nominal', { where: paymentWhere, transaction }) || 0;
+        remainingFunds = Number(paymentsSum || 0);
+      }
       if (remainingFunds > 0) {
         const piutangs = await models.Piutang.findAll({
           where: { id_customer: customerId },
@@ -267,12 +279,40 @@ async function syncPaymentEffects(payment, transaction = null, options = {}) {
             // Compute how much is still owed for this piutang, then allocate from remainingFunds
             const remainingForThis = Math.max(0, jumlah - prevPaid);
             const allocation = Math.min(remainingForThis, remainingFunds);
-            const newPaid = prevPaid + allocation;
-            const newStatus = newPaid >= jumlah ? 'lunas' : 'belum_lunas';
-            // Update only if allocation changed paid or status changed
-            if (allocation > 0 || p.status !== newStatus) {
-              await p.update({ paid: newPaid, status: newStatus, updated_at: new Date() }, { transaction });
-            }
+              const newPaid = prevPaid + allocation;
+              // By default, mark as lunas only if fully paid
+              let newStatus = newPaid >= jumlah ? 'lunas' : 'belum_lunas';
+              // Extra rule: do not mark piutang 'lunas' if the related order's dp_bayar
+              // has not reached the order total. This prevents marking debts as fully
+              // settled when the order itself is not yet considered fully paid.
+              try {
+                if (newStatus === 'lunas' && p.id_order) {
+                  const relatedOrder = await models.Order.findByPk(p.id_order, { transaction });
+                  if (relatedOrder) {
+                    const orderDp = Number(relatedOrder.dp_bayar || 0);
+                    const orderTotal = Number(relatedOrder.total_bayar || 0);
+                    if (orderDp < orderTotal) {
+                      // keep as belum_lunas until order's dp_bayar meets total
+                      newStatus = 'belum_lunas';
+                    }
+                  }
+                }
+              } catch (e) {
+                // If any error occurs while checking order, fall back to previous behavior
+              }
+              // Update only if allocation changed paid or status changed
+              if (allocation > 0 || p.status !== newStatus) {
+                // persist allocation history (hybrid approach)
+                try {
+                  if (allocation > 0 && models.PaymentAllocation) {
+                    await models.PaymentAllocation.create({ id_payment: payment.id_payment || payment.id, id_piutang: p.id_piutang || p.id, amount: allocation, tanggal_alloc: new Date() }, { transaction });
+                  }
+                } catch (e) {
+                  // don't fail overall flow if allocation history insert fails
+                  console.error('payment allocation insert failed', e && e.message ? e.message : e);
+                }
+                await p.update({ paid: newPaid, status: newStatus, updated_at: new Date() }, { transaction });
+              }
             remainingFunds = Math.max(0, remainingFunds - allocation);
             if (remainingFunds <= 0) break;
           }
@@ -314,19 +354,40 @@ async function ensurePiutangForCustomer(customerId, transaction = null) {
       if (remaining > 0) totalOutstanding += remaining;
     }
 
-    // If there is already any piutang rows for this customer, we don't auto-create a summary row
-    const existing = await models.Piutang.findOne({ where: { id_customer: customerId }, transaction });
-    if (!existing && totalOutstanding > 0) {
+    // Ensure there is a piutang row per order (so id_order is populated)
+    // This handles legacy/aggregate piutang rows that had id_order=null by
+    // creating per-order rows when missing.
+    if (totalOutstanding > 0) {
       const now = new Date();
-      await models.Piutang.create({
-        id_customer: customerId,
-        jumlah_piutang: totalOutstanding,
-        paid: 0.00,
-        tanggal_piutang: now,
-        status: 'belum_lunas',
-        created_at: now,
-        updated_at: now
-      }, { transaction });
+      for (const order of orders) {
+        const paidForOrder = await models.Payment.sum('nominal', { where: { no_transaksi: order.no_transaksi }, transaction }) || 0;
+        const remaining = Number(order.total_bayar || 0) - Number(paidForOrder || 0);
+        if (remaining > 0) {
+          // create per-order piutang only if not exists
+          const existForOrder = await models.Piutang.findOne({ where: { id_order: order.id_order }, transaction });
+          if (!existForOrder) {
+            await models.Piutang.create({
+              id_order: order.id_order,
+              id_customer: customerId,
+              jumlah_piutang: remaining,
+              paid: 0.00,
+              tanggal_piutang: now,
+              status: 'belum_lunas',
+              created_at: now,
+              updated_at: now
+            }, { transaction });
+          }
+        }
+      }
+
+      // Remove legacy aggregate piutang rows that don't reference an order (id_order IS NULL)
+      // after per-order rows are ensured. Do this carefully within the provided transaction.
+      try {
+        await models.Piutang.destroy({ where: { id_customer: customerId, id_order: null }, transaction });
+      } catch (e) {
+        // If destroy fails for any reason, log and continue - not fatal for payment flows
+        console.error('ensurePiutangForCustomer: failed to remove legacy piutang rows', e && e.message ? e.message : e);
+      }
     }
   } catch (err) {
     console.error('ensurePiutangForCustomer error:', err.message || err);
@@ -382,13 +443,13 @@ module.exports = {
         });
           // ensure piutang exists if needed, then sync effects (order status, piutang)
             await ensurePiutangForCustomer(payment.id_customer || (payment.Order && payment.Order.id_customer));
-            const effects = await syncPaymentEffects(payment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true });
+            const effects = await syncPaymentEffects(payment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true, usePaymentAmount: true });
             try { await setPaymentTypeIfFullyPaid(payment, effects, null); } catch(e) {}
             // send invoice webhook ONLY when the payment is verified
           try {
             if (payment && String(payment.status).toLowerCase() === 'verified') {
-              const _txn = payment.no_transaksi || (effects && effects.no_transaksi);
-              if (!shouldSkipInvoiceSend(_txn)) sendInvoiceWebhookOnce(req.app, _txn).catch(()=>{});
+          const _txn = payment.no_transaksi || (effects && effects.no_transaksi);
+            if (!shouldSkipInvoiceSend(_txn)) sendInvoiceWebhookOnce(req.app, _txn).catch(()=>{});
             }
           } catch (e) {}
             // emit payment created/updated
@@ -422,7 +483,7 @@ module.exports = {
         });
   // ensure piutang exists for customer, then sync
   await ensurePiutangForCustomer(payment.Customer ? payment.Customer.id_customer : null);
-  const effects = await syncPaymentEffects(payment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true });
+  const effects = await syncPaymentEffects(payment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true, usePaymentAmount: true });
   try { await setPaymentTypeIfFullyPaid(payment, effects, null); } catch(e) {}
   try {
     if (payment && String(payment.status).toLowerCase() === 'verified') {
@@ -462,7 +523,7 @@ module.exports = {
         });
   // ensure piutang exists for customer, then sync
   await ensurePiutangForCustomer(payment.Customer ? payment.Customer.id_customer : null);
-  const effects = await syncPaymentEffects(payment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true });
+  const effects = await syncPaymentEffects(payment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true, usePaymentAmount: true });
   try { await setPaymentTypeIfFullyPaid(payment, effects, null); } catch(e) {}
   try {
     if (payment && String(payment.status).toLowerCase() === 'verified') {
@@ -616,7 +677,7 @@ module.exports = {
           { model: models.Customer, attributes: ['id_customer', 'nama', 'no_hp'] }
         ]
       });
-  const effects = await syncPaymentEffects(updatedPayment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true });
+  const effects = await syncPaymentEffects(updatedPayment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true, usePaymentAmount: true });
   try { await setPaymentTypeIfFullyPaid(updatedPayment, effects, null); } catch(e) {}
     try { if (updatedPayment && String(updatedPayment.status).toLowerCase() === 'verified') { sendInvoiceWebhookOnce(req.app, effects.no_transaksi).catch(()=>{}); } } catch(e) {}
     try { emitPaymentEvent(req.app, updatedPayment, 'payment.updated'); } catch (e) { }
@@ -656,7 +717,7 @@ module.exports = {
       // ensure piutang exists for this customer so admin can reconcile later
         await ensurePiutangForCustomer(order.id_customer);
         // sync payment effects (update order dp/status and piutangs)
-  const effects = await syncPaymentEffects(payment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true });
+  const effects = await syncPaymentEffects(payment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true, usePaymentAmount: true });
   try { await setPaymentTypeIfFullyPaid(payment, effects, null); } catch(e) {}
     try { if (payment && String(payment.status).toLowerCase() === 'verified') { sendInvoiceWebhookOnce(req.app, effects.no_transaksi).catch(()=>{}); } } catch(e) {}
       res.status(201).json({ success: true, message: 'Bukti pembayaran diterima, menunggu verifikasi admin', payment_id: payment.id_payment, payment });
@@ -697,7 +758,7 @@ module.exports = {
           { model: models.Customer, attributes: ['id_customer', 'nama', 'no_hp'] }
         ]
       });
-  const effects = await syncPaymentEffects(updatedPayment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true });
+  const effects = await syncPaymentEffects(updatedPayment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true, usePaymentAmount: true });
   try { await setPaymentTypeIfFullyPaid(updatedPayment, effects, null); } catch(e) {}
     try { if (updatedPayment && String(updatedPayment.status).toLowerCase() === 'verified') { sendInvoiceWebhookOnce(req.app, effects.no_transaksi).catch(()=>{}); } } catch(e) {}
       res.status(200).json(updatedPayment);
@@ -731,7 +792,7 @@ module.exports = {
           { model: models.Customer, attributes: ['id_customer', 'nama', 'no_hp'] }
         ]
       });
-  const effects = await syncPaymentEffects(updatedPayment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true });
+  const effects = await syncPaymentEffects(updatedPayment, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true, usePaymentAmount: true });
   try { await setPaymentTypeIfFullyPaid(updatedPayment, effects, null); } catch(e) {}
     try { if (updatedPayment && String(updatedPayment.status).toLowerCase() === 'verified') { sendInvoiceWebhookOnce(req.app, effects.no_transaksi).catch(()=>{}); } } catch(e) {}
     try { emitPaymentEvent(req.app, updatedPayment, 'payment.updated'); } catch (e) { }
@@ -765,7 +826,7 @@ module.exports = {
           { model: models.Customer, attributes: ['id_customer', 'nama', 'no_hp'] }
         ]
       });
-  const effectsArr = await Promise.all(updatedPayments.map(p => syncPaymentEffects(p, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true })));
+  const effectsArr = await Promise.all(updatedPayments.map(p => syncPaymentEffects(p, null, { skipOrderWebhook: true, skipOrderStatusUpdate: true, usePaymentAmount: true })));
   try { await Promise.all(updatedPayments.map((p, i) => setPaymentTypeIfFullyPaid(p, effectsArr[i], null))); } catch(e) {}
     try { effectsArr.forEach(e => { if (e && String(e.status).toLowerCase() === 'verified') { try { sendInvoiceWebhookOnce(req.app, e.no_transaksi).catch(()=>{}); } catch(e) {} } }); } catch(e) {}
   try { updatedPayments.forEach(p => emitPaymentEvent(req.app, p, 'payment.updated')); } catch (e) { }
@@ -808,7 +869,7 @@ module.exports = {
 
         // ensure piutang exists and sync effects (both inside the same transaction)
         await ensurePiutangForCustomer(updatedPayment.id_customer || (updatedPayment.Order && updatedPayment.Order.id_customer), t);
-        const effects = await syncPaymentEffects(updatedPayment, t, { skipOrderWebhook: true, skipOrderStatusUpdate: true });
+  const effects = await syncPaymentEffects(updatedPayment, t, { skipOrderWebhook: true, skipOrderStatusUpdate: true, usePaymentAmount: true });
 
         // If this payment caused the order to become fully paid, normalize the payment type to 'pelunasan'
         try {
@@ -877,7 +938,35 @@ module.exports = {
       res.status(500).json({ error: error.message });
     }
   }
+,
+  // Get payment allocations by payment id
+  getAllocationsByPayment: async (req, res) => {
+    try {
+      const id = req.params.id;
+      if (!id) return res.status(400).json({ error: 'id payment required' });
+      const allocs = await models.PaymentAllocation.findAll({ where: { id_payment: id }, order: [['tanggal_alloc','DESC']] });
+      res.status(200).json(allocs);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  },
+  // Get payment allocations by piutang id
+  getAllocationsByPiutang: async (req, res) => {
+    try {
+      const id = req.params.id;
+      if (!id) return res.status(400).json({ error: 'id piutang required' });
+      const allocs = await models.PaymentAllocation.findAll({ where: { id_piutang: id }, order: [['tanggal_alloc','DESC']] });
+      res.status(200).json(allocs);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
 };
+
+// test-only export
+try {
+  module.exports.__test_syncPaymentEffects = syncPaymentEffects;
+} catch (e) {}
 
 // also expose helpers for scripts/tests
 module.exports.syncPaymentEffects = syncPaymentEffects;

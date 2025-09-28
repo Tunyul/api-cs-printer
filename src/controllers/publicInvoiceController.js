@@ -5,6 +5,7 @@ const ejs = require('ejs');
 const puppeteer = require('puppeteer');
 const axios = require('axios');
 const fs = require('fs');
+const getAppUrl = require('../utils/getAppUrl');
 
 const cache = new Map(); // key -> { buffer, expires }
 const DEFAULT_TTL = Number(process.env.PDF_CACHE_TTL || 86400) * 1000;
@@ -91,7 +92,7 @@ async function postNotifyWebhook(req, res) {
     const customerPhone = data.customer?.no_hp || '';
     const payload = {
       transaksi: data.order.no_transaksi,
-      invoice_url: `${process.env.APP_URL || `${req.protocol}://${req.get('host')}`}/invoice/${data.order.no_transaksi}.pdf`,
+      invoice_url: `${getAppUrl()}/invoice/${data.order.no_transaksi}.pdf`,
       customer: { nama: data.customer?.nama || '', phone: String(customerPhone || ''), no_hp: String(customerPhone || '') },
       total: Number(data.order.total_bayar || data.order.total_harga || 0),
       paid: data.payments.reduce((s, p) => s + Number(p.nominal || 0), 0),

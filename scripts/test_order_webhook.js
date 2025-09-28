@@ -5,7 +5,8 @@ const { sendOrderCompletedWebhook } = require('../src/utils/orderWebhook');
 const phoneArg = process.argv[2] || '6288806301215';
 const customerNameArg = process.argv[3] || 'Test Customer';
 const noTransaksiArg = process.argv[4] || 'TRX-TEST';
-const invoiceUrlArg = process.argv[5] || `${process.env.APP_URL || 'http://localhost:3000'}/invoice/TRX-TEST.pdf`;
+const getAppUrl = require('../src/utils/getAppUrl');
+const invoiceUrlArg = process.argv[5] || `${getAppUrl()}/invoice/TRX-TEST.pdf`;
 
 (async () => {
   try {

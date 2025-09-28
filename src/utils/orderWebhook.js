@@ -15,7 +15,8 @@ async function sendOrderCompletedWebhook(phone, customerName, noTransaksi, invoi
     const authPass = process.env.ORDER_WEBHOOK_PASS || process.env.INVOICE_WEBHOOK_PASS || '';
     const authHeader = (authUser || authPass) ? { auth: { username: authUser, password: authPass } } : {};
 
-    const invoice_url = invoiceUrl || `${process.env.APP_URL || 'http://localhost:3000'}/invoice/${noTransaksi}.pdf`;
+  const getAppUrl = require('./getAppUrl');
+  const invoice_url = invoiceUrl || `${getAppUrl()}/invoice/${noTransaksi}.pdf`;
 
     // Build friendly message showing customer name and transaction number if provided
     const message = `${customerName ? customerName + ', ' : ''}Pesanan Anda selesai. No: ${noTransaksi || ''}`.trim();

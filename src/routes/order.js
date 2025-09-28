@@ -411,7 +411,8 @@ router.put('/transaksi/:no_transaksi', async (req, res) => {
 				const customer = updatedOrder.id_customer ? await models.Customer.findByPk(updatedOrder.id_customer) : null;
 				const phone = customer ? customer.no_hp : null;
 				const customerName = customer ? customer.nama : '';
-				const invoiceUrl = `${process.env.APP_URL || 'http://localhost:3000'}/invoice/${updatedOrder.no_transaksi}.pdf`;
+				const getAppUrl = require('../utils/getAppUrl');
+				const invoiceUrl = `${getAppUrl()}/invoice/${updatedOrder.no_transaksi}.pdf`;
 				// call webhook (don't await) but log if it returns false
 				orderWebhook.sendOrderCompletedWebhook(phone, customerName, updatedOrder.no_transaksi, invoiceUrl)
 					.then(ok => {

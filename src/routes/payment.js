@@ -223,6 +223,28 @@ router.put('/:id', paymentController.updatePaymentById);
 // Protect approve route: only authenticated admin can approve payments
 router.put('/approve/:id', auth, admin, paymentController.approvePayment);
 
+// Get allocations for a payment
+/**
+ * @swagger
+ * /api/payments/{id}/allocations:
+ *   get:
+ *     summary: Get payment allocations by payment ID
+ *     tags: [Payment]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: Payment ID
+ *     responses:
+ *       200:
+ *         description: List of allocations
+ *       400:
+ *         description: Missing id
+ */
+router.get('/:id/allocations', auth, admin, paymentController.getAllocationsByPayment);
+
 /**
  * @swagger
  * /api/payments/approve/{id}:

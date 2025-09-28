@@ -24,7 +24,8 @@ module.exports = {
 
       const invoiceToken = await models.InvoiceToken.create({ token, no_transaksi, note, expires_at });
 
-  const appUrl = process.env.APP_URL || req.get('origin') || `${req.protocol}://${req.get('host')}`;
+  const getAppUrl = require('../utils/getAppUrl');
+  const appUrl = process.env.APP_URL || getAppUrl() || `${req.protocol}://${req.get('host')}`;
   const url = `${appUrl.replace(/\/$/, '')}/api/invoices/token/${token}`;
 
       return res.status(201).json({ data: { token, url, expires_at: expires_at.toISOString() } });
