@@ -15,12 +15,22 @@
 const express = require('express');
 const cors = require('cors');
 const { sequelize } = require('./models');
+const session = require('express-session');
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Session middleware (used for monitor login). Secret uses JWT_SECRET fallback.
+const sessionSecret = process.env.SESSION_SECRET || process.env.JWT_SECRET || 'please_change_this_secret';
+app.use(session({
+  secret: sessionSecret,
+  resave: false,
+  saveUninitialized: false,
+  cookie: { maxAge: 1000 * 60 * 60 } // 1 hour
+}));
 
 
 const { swaggerUi, specs } = require('../swagger/swagger');
@@ -75,5 +85,7 @@ if (process.env.NODE_ENV !== 'test') {
 
 const models = require('./models');
 app.set('models', models);
+// export session options for controllers if needed
+app.set('sessionOptions', { sessionKey: 'monitor_logged_in' });
 
 module.exports = app;

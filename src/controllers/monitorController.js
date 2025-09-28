@@ -126,8 +126,8 @@ async function metricsHandler(req, res) {
 
 // Serve a minimal live HTML page that consumes the SSE stream
 function livePage(req, res) {
-  // Capture monitor_key from query so we can wire it into the EventSource URL
-  const monitorKeyParam = req.query && req.query.monitor_key ? '?monitor_key=' + encodeURIComponent(req.query.monitor_key) : '';
+  // Capture monitor_key from query so the page can prefill it (we'll store it in sessionStorage)
+  const monitorKeyFromQuery = req.query && req.query.monitor_key ? req.query.monitor_key : '';
 
   const html = `<!doctype html>
   <html>
@@ -235,19 +235,70 @@ function livePage(req, res) {
 
   function renderNotifs(notifs){ const tb=document.querySelector('#notifTable tbody'); tb.innerHTML=''; if(!notifs || notifs.length===0){ tb.innerHTML='<tr><td colspan="5" class="small">no notifications</td></tr>'; return; } for(const n of notifs){ const tr=document.createElement('tr'); const t=(n.created_at||n.updated_at||''); tr.innerHTML = '<td>' + (n.id_notification||'') + '</td><td>' + t + '</td><td>' + (n.title||'') + '</td><td>' + (n.recipient_id||'') + '</td><td><details><summary style="cursor:pointer">preview</summary><pre style="margin:6px;background:#021124;color:#dbeafe;padding:6px;border-radius:6px">' + (JSON.stringify(n.data||n.body||{},null,2)) + '</pre></details></td>'; tb.appendChild(tr); } }
 
-      // SSE connection with auto-reconnect
+      // SSE connection with auto-reconnect and client-side login
       let es;
+      let connected = false;
+
+      // We'll use server-side session auth. Check auth on load, POST /login to authenticate,
+      // then open SSE without sending the key in query params.
       function start() {
+        const url = '/internal/monitor/sse';
         try {
-          // include monitor_key query param when provided by the server-side page
-          es = new EventSource('/internal/monitor/sse${monitorKeyParam}');
-        } catch(e){ console.error(e); setStatus(false); return; }
-  setStatus(true);
-  es.onmessage = function(e){ try { const d = JSON.parse(e.data); pidEl.textContent = d.proc.pid || '-'; portEl.textContent = (d.proc.env && d.proc.env.PORT) || '-'; uptimeEl.textContent = d.proc.uptime_s || '-'; rssEl.textContent = humanBytes(d.proc.memory && d.proc.memory.rss); nodeverEl.textContent = d.proc.node_version || '-'; renderRooms(d.sockets && d.sockets.rooms); renderNotifs(d.notifications); preview.textContent = JSON.stringify(d, null, 2); lastUpdate.textContent = new Date().toLocaleString(); if(d.server_ts){ const serverTs=new Date(d.server_ts).getTime(); const now=Date.now(); latencyEl.textContent = 'Latency: '+(now-serverTs)+' ms'; } } catch(err){ console.error(err); } };
-        es.onerror = function(err){ console.error('SSE error', err); setStatus(false); try{ es.close && es.close(); }catch(e){}; setTimeout(()=>{ start(); }, 2000); };
+          es = new EventSource(url, { withCredentials: true });
+        } catch(e){ console.error(e); setStatus(false); showLogin(); return; }
+        setStatus(true);
+        connected = true;
+        btnConnect.textContent = 'Disconnect';
+        es.onmessage = function(e){ try { const d = JSON.parse(e.data); pidEl.textContent = d.proc.pid || '-'; portEl.textContent = (d.proc.env && d.proc.env.PORT) || '-'; uptimeEl.textContent = d.proc.uptime_s || '-'; rssEl.textContent = humanBytes(d.proc.memory && d.proc.memory.rss); nodeverEl.textContent = d.proc.node_version || '-'; renderRooms(d.sockets && d.sockets.rooms); renderNotifs(d.notifications); preview.textContent = JSON.stringify(d, null, 2); lastUpdate.textContent = new Date().toLocaleString(); if(d.server_ts){ const serverTs=new Date(d.server_ts).getTime(); const now=Date.now(); latencyEl.textContent = 'Latency: '+(now-serverTs)+' ms'; } } catch(err){ console.error(err); } };
+        es.onerror = function(err){ console.error('SSE error', err); setStatus(false); connected=false; try{ es.close && es.close(); }catch(e){}; setTimeout(()=>{ start(); }, 2000); };
       }
 
+      function stop(){ if(es){ try{ es.close(); }catch(e){} es=null; } connected=false; setStatus(false); btnConnect.textContent='Connect'; }
+
       function setStatus(ok){ if(ok){ conn.classList.remove('off'); conn.classList.add('ok'); conn.textContent='LIVE'; } else { conn.classList.remove('ok'); conn.classList.add('off'); conn.textContent='DISCONNECTED'; } }
+
+      // Login overlay
+      const loginOverlay = document.createElement('div'); loginOverlay.style.position='fixed'; loginOverlay.style.inset='0'; loginOverlay.style.background='rgba(2,6,23,0.7)'; loginOverlay.style.display='flex'; loginOverlay.style.alignItems='center'; loginOverlay.style.justifyContent='center'; loginOverlay.style.zIndex='9999';
+  loginOverlay.innerHTML = '<div style="background:#031124;padding:18px;border-radius:8px;min-width:320px;color:#dbeafe"><h3 style="margin:0 0 8px 0">Enter monitor key</h3><div style="margin-bottom:8px"><input id="monitorKeyInput" placeholder="monitor key" style="width:100%;padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.05);background:#021124;color:#dbeafe"/></div><div style="display:flex;gap:8px;justify-content:flex-end"><button id="monitorKeySave" style="padding:8px 10px;border-radius:6px">Save</button><button id="monitorKeyCancel" style="padding:8px 10px;border-radius:6px">Close</button></div><div class="small" style="margin-top:8px;color:#94a3b8">Key is stored in sessionStorage for this tab only.</div></div>';
+      document.body.appendChild(loginOverlay);
+      const monitorKeyInput = loginOverlay.querySelector('#monitorKeyInput');
+      const monitorKeySave = loginOverlay.querySelector('#monitorKeySave');
+      const monitorKeyCancel = loginOverlay.querySelector('#monitorKeyCancel');
+
+      function showLogin(prefill){ monitorKeyInput.value = prefill || ''; loginOverlay.style.display='flex'; }
+      function hideLogin(){ loginOverlay.style.display='none'; }
+
+      // when user saves key, POST to /internal/monitor/login to create server session
+      monitorKeySave.onclick = async ()=>{
+        const v = monitorKeyInput.value && monitorKeyInput.value.trim();
+        if(!v) return alert('Please enter the key');
+        try{
+          const r = await fetch('/internal/monitor/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ monitor_key: v }) });
+          if (!r.ok) { const t = await r.json().catch(()=>({})); return alert('Login failed: ' + (t && t.error ? t.error : r.status)); }
+          hideLogin();
+          // start SSE using session cookie
+          start();
+        }catch(e){ alert('Login request failed: ' + e); }
+      };
+      monitorKeyCancel.onclick = ()=>{ hideLogin(); };
+
+      // Controls: connect/disconnect and metrics viewer
+      const btnConnect = document.createElement('button'); btnConnect.textContent='Connect'; btnConnect.style.marginLeft='8px'; btnConnect.onclick = ()=>{ if(connected) stop(); else start(); };
+      document.querySelector('.meta').appendChild(btnConnect);
+
+      const btnMetrics = document.createElement('button'); btnMetrics.textContent='Metrics'; btnMetrics.style.marginLeft='8px';
+      const metricsBox = document.createElement('pre'); metricsBox.className='json'; metricsBox.style.maxHeight='180px'; metricsBox.style.marginTop='8px'; metricsBox.style.display='none';
+      document.querySelector('aside .card').appendChild(btnMetrics);
+      document.querySelector('aside .card').appendChild(metricsBox);
+      btnMetrics.onclick = async ()=>{
+        try{
+          metricsBox.style.display='block';
+          const r = await fetch('/internal/monitor/metrics', { credentials: 'same-origin' });
+          if(!r.ok){ if(r.status===403){ showLogin(); return; } metricsBox.textContent = 'metrics fetch failed: '+r.status; return; }
+          const txt = await r.text();
+          metricsBox.textContent = txt;
+        }catch(e){ metricsBox.textContent = 'metrics fetch error: '+e; }
+      };
 
       document.getElementById('btnCopy').onclick = ()=>{ try{ navigator.clipboard.writeText(preview.textContent); alert('JSON copied to clipboard'); }catch(e){ alert('Copy failed: '+e); }};
       document.getElementById('btnClear').onclick = ()=>{ preview.textContent='-'; document.querySelector('#roomsTable tbody').innerHTML='<tr><td colspan="2" class="small">-</td></tr>'; document.querySelector('#notifTable tbody').innerHTML='<tr><td colspan="5" class="small">-</td></tr>'; };
@@ -260,4 +311,36 @@ function livePage(req, res) {
   res.send(html);
 }
 
-module.exports = { monitor, sseStream, livePage, metricsHandler };
+// Session login handler
+async function login(req, res) {
+  try {
+    const key = process.env.MONITOR_KEY;
+    if (!key) return res.status(400).json({ error: 'Monitor key not configured' });
+    // Accept key from JSON body, form body, query param, or x-monitor-key header.
+  const bodyKey = req.body && (req.body.monitor_key || req.body.key || req.body.password);
+  const headerKey = req.headers && (req.headers['x-monitor-key'] || req.headers['x_monitor_key']);
+  const queryKey = req.query && req.query.monitor_key;
+  const provided = bodyKey || headerKey || queryKey;
+  // debug logging to help diagnose mismatches
+  try { console.debug('monitor login check', { envKey: key, provided, bodyKey, headerKey, queryKey }); } catch (e) {}
+  if (!provided || provided !== key) return res.status(403).json({ error: 'Forbidden' });
+    // mark session as authenticated
+    if (req.session) req.session.monitor_authenticated = true;
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ error: String(e) });
+  }
+}
+
+// Logout handler
+async function logout(req, res) {
+  try {
+    if (req.session) req.session.monitor_authenticated = false;
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ error: String(e) });
+  }
+}
+
+// export public handlers
+module.exports = { monitor, sseStream, livePage, metricsHandler, login, logout };
