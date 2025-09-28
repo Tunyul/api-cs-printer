@@ -1,5 +1,5 @@
 
-const { Piutang, Customer, Op } = require('../models');
+const { Piutang, Customer, Order, Op } = require('../models');
 
 class PiutangController {
   // Get all piutangs
@@ -28,6 +28,9 @@ class PiutangController {
         include: [{
           model: Customer,
           attributes: ['id_customer', 'nama', 'no_hp']
+        }, {
+          model: Order,
+          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'status']
         }],
         where: whereClause,
         order: [['created_at', 'DESC']]
@@ -55,6 +58,9 @@ class PiutangController {
         include: [{
           model: Customer,
           attributes: ['id_customer', 'nama', 'no_hp']
+        }, {
+          model: Order,
+          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'status']
         }],
         where: { id_piutang: id }
       });
@@ -95,6 +101,9 @@ class PiutangController {
         include: [{
           model: Customer,
           attributes: ['id_customer', 'nama', 'no_hp']
+        }, {
+          model: Order,
+          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'status']
         }],
         where: { id_piutang: piutang.id_piutang }
       });
@@ -150,6 +159,9 @@ class PiutangController {
         include: [{
           model: Customer,
           attributes: ['id_customer', 'nama', 'no_hp']
+        }, {
+          model: Order,
+          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'status']
         }],
         where: { id_piutang: id }
       });
@@ -215,6 +227,9 @@ class PiutangController {
           include: [{
             model: Customer,
             attributes: ['id_customer', 'nama', 'no_hp']
+          }, {
+            model: Order,
+            attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'status']
           }],
           where: { id_customer: id },
         order: [['created_at', 'DESC']]
@@ -245,6 +260,9 @@ class PiutangController {
         include: [{
           model: Customer,
           attributes: ['id_customer', 'nama', 'no_hp']
+        }, {
+          model: Order,
+          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'status']
         }],
         where: {
           tanggal_jatuh_tempo: { [Op.lt]: now },

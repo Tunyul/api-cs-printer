@@ -51,3 +51,12 @@
 ### Maintenance
 - Minor packaging and version metadata updates.
 
+
+## [2.0.3] - 2025-09-28
+### Added
+- Piutang API responses now include associated `Order` rows so clients receive order metadata alongside piutang entries (e.g., `id_order`, `no_transaksi`, `tanggal_order`, `total_bayar`, `status`).
+
+### Changed
+- Updated controller `src/controllers/piutangController.js` to include `Order` in `find` queries for `getAllPiutangs`, `getPiutangById`, `createPiutang`, `updatePiutang`, `getPiutangsByCustomerId`, and `getOverduePiutangs`.
+
+
