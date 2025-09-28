@@ -36,12 +36,36 @@ class PiutangController {
         order: [['created_at', 'DESC']]
       });
 
-      // attach dp_bayar as top-level field for convenience
-      const data = piutangs.map(p => {
+      // attach dp_bayar and verified payment info as top-level fields for convenience
+      const models = require('../models');
+      const data = await Promise.all(piutangs.map(async (p) => {
         const plain = p.toJSON ? p.toJSON() : p;
         plain.dp_bayar = (plain.Order && Number(plain.Order.dp_bayar || 0)) || 0;
+        try {
+          const noTrans = (plain.Order && plain.Order.no_transaksi) || null;
+          if (noTrans) {
+            const verifiedPaid = await models.Payment.sum('nominal', { where: { no_transaksi: noTrans, status: 'verified' } }) || 0;
+            const verifiedCount = await models.Payment.count({ where: { no_transaksi: noTrans, status: 'verified' } }) || 0;
+            // fetch verified payment rows for this transaction
+            const verifiedRows = await models.Payment.findAll({
+              where: { no_transaksi: noTrans, status: 'verified' },
+              attributes: ['id_payment', 'no_transaksi', 'no_hp', 'nominal', 'status', 'tipe', 'tanggal', 'bukti'],
+              order: [['tanggal', 'ASC']]
+            });
+            plain.verified_paid = Number(verifiedPaid || 0);
+            plain.verified_payments_count = Number(verifiedCount || 0);
+            plain.verified_payments = (verifiedRows || []).map(r => r.toJSON ? r.toJSON() : r);
+          } else {
+            plain.verified_paid = 0;
+            plain.verified_payments_count = 0;
+            plain.verified_payments = [];
+          }
+        } catch (e) {
+          plain.verified_paid = 0;
+          plain.verified_payments_count = 0;
+        }
         return plain;
-      });
+      }));
 
       return res.status(200).json({
         success: true,

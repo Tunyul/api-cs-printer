@@ -18,8 +18,19 @@ async function sendOrderCompletedWebhook(phone, customerName, noTransaksi, invoi
   const getAppUrl = require('./getAppUrl');
   const invoice_url = invoiceUrl || `${getAppUrl()}/invoice/${noTransaksi}.pdf`;
 
-    // Build friendly message showing customer name and transaction number if provided
-    const message = `${customerName ? customerName + ', ' : ''}Pesanan Anda selesai. No: ${noTransaksi || ''}`.trim();
+  // Build improved, user-friendly message with helpful next steps
+  // Example:
+  // "Cici, pesanan Anda (No: TRX-123) telah selesai. Terima kasih telah berbelanja!
+  //  Total pembayaran sudah diterima. Jika ada pertanyaan, balas pesan ini atau hubungi CS di 0812-xxxx.
+  //  Invoice: <link>"
+  const lines = [];
+  if (customerName) lines.push(`${customerName}, pesanan Anda telah selesai.`);
+  else lines.push('Pesanan Anda telah selesai.');
+  if (noTransaksi) lines.push(`No: ${noTransaksi}`);
+  lines.push('Terima kasih telah berbelanja di toko kami. Total pembayaran telah diterima.');
+  lines.push(`Invoice: ${invoice_url}`);
+  lines.push('Butuh bantuan? Balas pesan ini atau hubungi CS.');
+  const message = lines.join('\n');
 
     const payload = {
       phone: String(phone),

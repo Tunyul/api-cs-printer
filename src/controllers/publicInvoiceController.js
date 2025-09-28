@@ -163,3 +163,62 @@ async function postNotifyWebhook(req, res) {
 }
 
 module.exports = { getInvoicePdf, postNotifyWebhook };
+
+// Simple HTML landing page for invoices to make links previewable/clickable
+// Example: GET /invoice/TRX-12345 -> serves an HTML page with Open Graph meta tags
+async function getInvoiceLanding(req, res) {
+  try {
+    const no = req.params.no_transaksi;
+    if (!no) return res.status(400).send('no_transaksi required');
+
+    const data = await fetchAggregateData(req.app, no);
+    if (!data) return res.status(404).send('<h1>Invoice not found</h1>');
+
+    const appUrl = getAppUrl();
+    const pdfUrl = `${appUrl}/invoice/${no}.pdf`;
+    const title = `Invoice ${no} - ${data.customer ? data.customer.nama : ''}`;
+    const description = `Total: ${Number(data.order.total_bayar || data.order.total_harga || 0).toLocaleString()} - Klik untuk lihat invoice dan detail pesanan.`;
+
+    // Minimal HTML with Open Graph tags; WhatsApp will use these for preview
+    const html = `<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>${escapeHtml(title)}</title>
+  <meta property="og:title" content="${escapeHtml(title)}" />
+  <meta property="og:description" content="${escapeHtml(description)}" />
+  <meta property="og:url" content="${escapeHtml(appUrl + req.originalUrl)}" />
+  <meta property="og:type" content="website" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <style>body{font-family:Arial,helvetica,sans-serif;margin:24px;} .card{max-width:680px;border:1px solid #eee;padding:18px;border-radius:8px;} a.button{display:inline-block;margin-top:12px;padding:10px 14px;background:#2d8cff;color:#fff;border-radius:6px;text-decoration:none;} </style>
+</head>
+<body>
+  <div class="card">
+    <h2>${escapeHtml(title)}</h2>
+    <p>${escapeHtml(description)}</p>
+    <p><strong>Nama:</strong> ${escapeHtml(data.customer ? data.customer.nama : '')}</p>
+    <p><strong>No transaksi:</strong> ${escapeHtml(no)}</p>
+    <a class="button" href="${escapeHtml(pdfUrl)}" target="_blank" rel="noopener">Lihat/Download Invoice (PDF)</a>
+  </div>
+</body>
+</html>`;
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.send(html);
+  } catch (err) {
+    console.error('getInvoiceLanding error', err);
+    return res.status(500).send('Internal server error');
+  }
+}
+
+// small helper to escape HTML entities
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str).replace(/[&<>"']/g, function (s) {
+    return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[s];
+  });
+}
+
+// Export landing handler alongside existing exports
+module.exports = { getInvoicePdf, postNotifyWebhook, getInvoiceLanding };

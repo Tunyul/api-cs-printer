@@ -97,7 +97,7 @@ async function sendInvoiceWebhook(app, no_transaksi) {
     const getAppUrl = require('../utils/getAppUrl');
     const payload = {
       phone: custPhone,
-      invoice_url: `${getAppUrl()}/invoice/${order.no_transaksi}.pdf`
+  invoice_url: `${getAppUrl()}/invoice/${order.no_transaksi}.pdf`
     };
 
     const webhookUrl = process.env.INVOICE_WEBHOOK_URL;
@@ -228,7 +228,7 @@ async function syncPaymentEffects(payment, transaction = null, options = {}) {
         const customer = await models.Customer.findByPk(order.id_customer, { transaction });
         const phone = customer ? customer.no_hp : null;
         const customerName = customer ? customer.nama : '';
-        const invoiceUrl = `${process.env.APP_URL || 'http://localhost:3000'}/invoice/${order.no_transaksi}.pdf`;
+  const invoiceUrl = `${process.env.APP_URL || 'http://localhost:3000'}/invoice/${order.no_transaksi}.pdf`;
         orderWebhook.sendOrderCompletedWebhook(phone, customerName, order.no_transaksi, invoiceUrl).catch(() => {});
       }
     } catch (e) {}
@@ -312,6 +312,21 @@ async function syncPaymentEffects(payment, transaction = null, options = {}) {
                   console.error('payment allocation insert failed', e && e.message ? e.message : e);
                 }
                 await p.update({ paid: newPaid, status: newStatus, updated_at: new Date() }, { transaction });
+                // Optional: remove or zero-out piutang rows when fully paid.
+                // Controlled via environment variables to keep behavior backward-compatible.
+                try {
+                  if (newStatus === 'lunas') {
+                    // If PIUTANG_REMOVE_ON_LUNAS=true, delete the piutang row (destructive)
+                    if (String(process.env.PIUTANG_REMOVE_ON_LUNAS || '').toLowerCase() === 'true') {
+                      try { await p.destroy({ transaction }); } catch (e) { console.error('failed to destroy piutang', e && e.message ? e.message : e); }
+                    } else if (String(process.env.PIUTANG_ZERO_ON_LUNAS || '').toLowerCase() === 'true') {
+                      // If PIUTANG_ZERO_ON_LUNAS=true, set jumlah_piutang and paid to 0 so it doesn't show as outstanding
+                      try { await p.update({ jumlah_piutang: 0, paid: 0, updated_at: new Date() }, { transaction }); } catch (e) { console.error('failed to zero piutang amount', e && e.message ? e.message : e); }
+                    }
+                  }
+                } catch (e) {
+                  // swallow to avoid breaking payment flows
+                }
               }
             remainingFunds = Math.max(0, remainingFunds - allocation);
             if (remainingFunds <= 0) break;
