@@ -1,7 +1,62 @@
 const app = require('./src/app');
+const http = require('http');
+const { Server } = require('socket.io');
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
+const server = http.createServer(app);
+
+// Attach Socket.IO
+const io = new Server(server, {
+  cors: {
+    origin: process.env.FRONTEND_ORIGIN || '*',
+    methods: ['GET', 'POST']
+  }
+});
+
+// Simple JWT handshake verification
+io.use((socket, next) => {
+  // token may be mutated so use let
+  let token = socket.handshake.auth && socket.handshake.auth.token;
+  if (!token) return next(new Error('Authentication error'));
+  // Accept "Bearer <token>" or raw token
+  if (typeof token === 'string' && token.startsWith('Bearer ')) token = token.slice(7);
+  const jwt = require('jsonwebtoken');
+  const { JWT_SECRET } = require('./src/config/auth');
+  // Use callback-style verify so we can inspect the error type and send a clearer
+  // message to clients (socket.io will pass this message to connect_error).
+  jwt.verify(token, JWT_SECRET, (err, payload) => {
+    if (err) {
+      console.error('socket auth error:', err && err.message ? err.message : err);
+      // If token expired, forward the original jwt message so clients can react
+      if (err.name === 'TokenExpiredError') return next(new Error('jwt expired'));
+      return next(new Error('Authentication error'));
+    }
+    socket.user = payload;
+    return next();
+  });
+});
+
+io.on('connection', (socket) => {
+  // Join user-specific rooms (support both id_user and id_customer if present)
+  if (socket.user) {
+    // join both internal (user) and customer namespaces to be resilient
+    if (socket.user.id_user) socket.join(`internal:${socket.user.id_user}`);
+    if (socket.user.id_customer) socket.join(`customer:${socket.user.id_customer}`);
+    if (socket.user.role && socket.user.role === 'admin') socket.join('role:admin');
+    console.log('socket connected user=', socket.user);
+    try {
+      console.log('socket rooms=', Array.from(socket.rooms));
+    } catch (e) {}
+  }
+  socket.on('disconnect', () => {
+    // noop for now
+  });
+});
+
+// expose io to express app so controllers can emit
+app.set('io', io);
+
+server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });

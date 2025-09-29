@@ -8,6 +8,25 @@ exports.updateStatusBotByNoTransaksi = async (req, res) => {
     const order = await models.Order.findOne({ where: { no_transaksi } });
     if (!order) return res.status(404).json({ error: 'Order tidak ditemukan' });
     await order.update({ status_bot: 'selesai' });
+    // emit order.status_bot.updated to user and admins and persist notification
+    try {
+      const io = req.app.get('io');
+      const updated = await models.Order.findByPk(order.id_order);
+      if (io && updated) {
+  const payload = { id_order: updated.id_order, no_transaksi: updated.no_transaksi, id_customer: updated.id_customer, status_bot: updated.status_bot, timestamp: new Date().toISOString() };
+  // emit to admin only
+  io.to('role:admin').emit('order.status_bot.updated', payload);
+        try {
+          const Notification = req.app.get('models').Notification;
+          const now = new Date();
+          try {
+            const notify = require('../utils/notify');
+            // customer notifications intentionally skipped
+            notify(req.app, 'role', 'admin', 'order.status_bot.updated', payload, 'Order bot status updated');
+          } catch (e) { console.error('notify order.status_bot.updated error', e && e.message ? e.message : e); }
+        } catch (e) {}
+      }
+    } catch (e) { console.error('emit order.status_bot.updated error', e && e.message ? e.message : e); }
     res.json(order);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -236,16 +255,39 @@ exports.createOrder = async (req, res) => {
       // Hitung total bayar dari order_details
       let total_bayar = 0;
       const orderDetailData = [];
+      // unit_area is expected to be present on Product (backfilled by migration). Do not parse product.ukuran_standar strings anymore.
+
       for (const item of order_details) {
         const product = await models.Product.findByPk(item.id_product);
         if (!product) return res.status(404).json({ error: `Product ${item.id_product} not found` });
-        const harga = Number(product.harga_per_pcs || 0);
-        const quantity = Number(item.qty || 1);
-        const subtotal_item = harga * quantity;
+        const qty = Number(item.qty || 1);
+
+        // determine dimension source (if provided in request)
+        const dimSource = item.dimension || item.size || { width: item.width, height: item.height, unit: item.unit };
+        // build product copy with unit_area parsed from ukuran_standar so computeOrderDetailPrice can fallback
+  const prodPlain = product.toJSON ? product.toJSON() : Object.assign({}, product);
+  // unit_area should be present after migration; use it directly
+  // keep existing prodPlain.unit_area if present
+
+        // decide pricing based on product.ukuran_standar enum ('m' or 'pcs')
+        const hargaPerM2 = Number(prodPlain.harga_per_m2 || 0);
+        let harga_satuan = 0;
+        let subtotal_item = 0;
+        if ((prodPlain.ukuran_standar || 'pcs').toLowerCase() === 'm' && hargaPerM2 > 0) {
+          // compute using utility (will fallback to prodPlain.unit_area if dimSource null)
+          const computeRes = require('../utils/priceCalculator').computeOrderDetailPrice(prodPlain, { dimension: (typeof dimSource === 'object' ? dimSource : (dimSource || null)) }, qty);
+          harga_satuan = computeRes.harga_satuan;
+          subtotal_item = computeRes.subtotal_item;
+        } else {
+          const harga = Number(prodPlain.harga_per_pcs || 0);
+          harga_satuan = harga;
+          subtotal_item = harga * qty;
+        }
+
         total_bayar += subtotal_item;
         orderDetailData.push({
-          quantity,
-          harga_satuan: harga,
+          quantity: qty,
+          harga_satuan,
           subtotal_item,
           id_product: item.id_product || item.id_produk
         });
@@ -283,11 +325,24 @@ exports.createOrder = async (req, res) => {
       for (const item of order_details) {
         const product = await models.Product.findByPk(item.id_product);
         if (!product) return res.status(404).json({ error: `Product ${item.id_product} not found` });
-        const harga = Number(product.harga_per_pcs || 0);
-        const quantity = Number(item.qty || 1);
-        const subtotal_item = harga * quantity;
+        const qty = Number(item.qty || 1);
+        const prodPlain = product.toJSON ? product.toJSON() : Object.assign({}, product);
+        // unit_area should already be present on prodPlain (migration backfilled it when possible)
+        const dimSource = item.dimension || item.size || { width: item.width, height: item.height, unit: item.unit };
+        const hargaPerM2 = Number(prodPlain.harga_per_m2 || 0);
+        let harga_satuan = 0;
+        let subtotal_item = 0;
+        if (hargaPerM2 > 0) {
+          const computeRes = require('../utils/priceCalculator').computeOrderDetailPrice(prodPlain, { dimension: (typeof dimSource === 'object' ? dimSource : (dimSource || null)) }, qty);
+          harga_satuan = computeRes.harga_satuan;
+          subtotal_item = computeRes.subtotal_item;
+        } else {
+          const harga = Number(prodPlain.harga_per_pcs || 0);
+          harga_satuan = harga;
+          subtotal_item = harga * qty;
+        }
         total_bayar += subtotal_item;
-        await models.OrderDetail.create({ id_order: order.id_order, id_produk: item.id_product || item.id_produk, quantity, harga_satuan: harga, subtotal_item });
+        await models.OrderDetail.create({ id_order: order.id_order, id_produk: item.id_product || item.id_produk, quantity: qty, harga_satuan, subtotal_item });
       }
       // Update total_bayar di order
       await models.Order.update({ total_bayar, total_harga: total_bayar }, { where: { id_order: order.id_order } });
@@ -303,18 +358,47 @@ exports.createOrder = async (req, res) => {
       include: [{ model: models.OrderDetail, include: [models.Product] }]
     });
 
+    // Emit order.created when a new order is created
+    try {
+      const io = req.app.get('io');
+      if (io && order) {
+        const payload = { id_order: order.id_order, no_transaksi: order.no_transaksi, id_customer: order.id_customer, total_bayar: Number(order.total_bayar || 0), status_bot: order.status_bot, timestamp: new Date().toISOString() };
+        // Use notify helper to emit and persist (avoid duplicate emits)
+        try {
+          const notify = require('../utils/notify');
+          // customer notifications intentionally skipped
+          notify(req.app, 'role', 'admin', 'order.created', payload, 'Order created');
+        } catch (e) { console.error('notify order.created error', e && e.message ? e.message : e); }
+      }
+    } catch (e) {
+      console.error('emit order.created error', e && e.message ? e.message : e);
+    }
+
     // Jika header bot = true, respon custom
     if (req.headers['bot'] === 'true') {
       // Ambil nama produk untuk setiap order detail dari request
       const orderDetailsWithProductName = await Promise.all(order_details.map(async (item) => {
         const product = await models.Product.findByPk(item.id_product);
-        const harga = Number(product ? product.harga_per_pcs : 0);
-        const quantity = Number(item.qty || 1);
-        const subtotal_item = harga * quantity;
+        const prodPlain = product && product.toJSON ? product.toJSON() : (product || {});
+        // product.unit_area should already exist when product is priced per-m2
+        const dimSource = item.dimension || item.size || { width: item.width, height: item.height, unit: item.unit };
+        const qty = Number(item.qty || 1);
+        let harga_satuan = 0;
+        let subtotal_item = 0;
+        const hargaPerM2 = Number(prodPlain.harga_per_m2 || 0);
+        if (hargaPerM2 > 0) {
+          const computeRes = require('../utils/priceCalculator').computeOrderDetailPrice(prodPlain, { dimension: (typeof dimSource === 'object' ? dimSource : (dimSource || null)) }, qty);
+          harga_satuan = computeRes.harga_satuan;
+          subtotal_item = computeRes.subtotal_item;
+        } else {
+          const harga = Number(prodPlain.harga_per_pcs || 0);
+          harga_satuan = harga;
+          subtotal_item = harga * qty;
+        }
         return {
           nama_produk: product ? product.nama_produk : null,
-          quantity,
-          harga_satuan: harga,
+          quantity: qty,
+          harga_satuan,
           subtotal_item
         };
       }));
@@ -380,7 +464,42 @@ exports.updateOrder = async (req, res) => {
       });
       
       await transaction.commit();
-  res.status(200).json(updatedOrder);
+      // emit order.updated
+      try {
+        const io = req.app.get('io');
+        if (io && updatedOrder) {
+          const payload = { id_order: updatedOrder.id_order, no_transaksi: updatedOrder.no_transaksi, id_customer: updatedOrder.id_customer, total_bayar: Number(updatedOrder.total_bayar || 0), timestamp: new Date().toISOString() };
+          io.to('role:admin').emit('order.updated', payload);
+          // persist notification
+          try {
+            const Notification = req.app.get('models').Notification;
+            const now = new Date();
+            try {
+              const notify = require('../utils/notify');
+              notify(req.app, 'role', 'admin', 'order.updated', payload, 'Order updated');
+            } catch (e) { console.error('notify order.updated error', e && e.message ? e.message : e); }
+          } catch (e) {}
+        }
+      } catch (e) {
+        console.error('emit order.updated error', e && e.message ? e.message : e);
+      }
+    // If status transitioned to 'selesai', notify external webhook (non-blocking)
+    try {
+      const prev = await models.Order.findByPk(req.params.id);
+      if (updatedOrder && String(updatedOrder.status).toLowerCase() === 'selesai') {
+  const orderWebhook = require('../utils/orderWebhook');
+  const customer = updatedOrder.id_customer ? (await models.Customer.findByPk(updatedOrder.id_customer)) : null;
+  const phone = customer ? customer.no_hp : null;
+  const customerName = customer ? customer.nama : '';
+  const getAppUrl = require('../utils/getAppUrl');
+  const invoiceUrl = `${getAppUrl()}/invoice/${updatedOrder.no_transaksi}.pdf`;
+  // temporary debug log to verify controller triggers webhook
+  try { const fs = require('fs'); fs.appendFileSync('server.log', `[${new Date().toISOString()}] controller-before-order-webhook ${updatedOrder.no_transaksi} phone=${phone} name=${customerName}\n`); } catch(e){}
+  orderWebhook.sendOrderCompletedWebhook(phone, customerName, updatedOrder.no_transaksi, invoiceUrl).catch(() => {});
+      }
+    } catch (e) {}
+
+    res.status(200).json(updatedOrder);
     } else {
       res.status(404).json({ error: 'Order not found' });
     }
@@ -664,7 +783,39 @@ exports.updateOrderByNoTransaksi = async (req, res) => {
     }
     await order.update(updateData);
     const updatedOrder = await models.Order.findOne({ where: { no_transaksi } });
+    // emit order.updated to user and admins and persist notification
+    try {
+      const io = req.app.get('io');
+      if (io && updatedOrder) {
+  const payload = { id_order: updatedOrder.id_order, no_transaksi: updatedOrder.no_transaksi, id_customer: updatedOrder.id_customer, total_bayar: Number(updatedOrder.total_bayar || 0), timestamp: new Date().toISOString() };
+  // emit to admin only
+  io.to('role:admin').emit('order.updated', payload);
+        try {
+          const Notification = req.app.get('models').Notification;
+          const now = new Date();
+          try {
+            const notify = require('../utils/notify');
+            // customer notifications intentionally skipped
+            notify(req.app, 'role', 'admin', 'order.updated', payload, 'Order updated');
+          } catch (e) { console.error('notify order.updated error', e && e.message ? e.message : e); }
+        } catch (e) {}
+      }
+    } catch (e) { console.error('emit order.updated error', e && e.message ? e.message : e); }
     res.status(200).json({ success: true, message: 'Order updated', order: updatedOrder });
+    // If status is selesai, notify webhook
+    try {
+      if (updatedOrder && String(updatedOrder.status).toLowerCase() === 'selesai') {
+  const orderWebhook = require('../utils/orderWebhook');
+  const customer = updatedOrder.id_customer ? await models.Customer.findByPk(updatedOrder.id_customer) : null;
+  const phone = customer ? customer.no_hp : null;
+  const customerName = customer ? customer.nama : '';
+  const getAppUrl = require('../utils/getAppUrl');
+  const invoiceUrl = `${getAppUrl()}/invoice/${updatedOrder.no_transaksi}.pdf`;
+  // temporary debug log to verify controller triggers webhook
+  try { const fs = require('fs'); fs.appendFileSync('server.log', `[${new Date().toISOString()}] controller-before-order-webhook ${updatedOrder.no_transaksi} phone=${phone} name=${customerName}\n`); } catch(e){}
+  orderWebhook.sendOrderCompletedWebhook(phone, customerName, updatedOrder.no_transaksi, invoiceUrl).catch(() => {});
+      }
+    } catch (e) {}
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -746,17 +897,57 @@ exports.updateOrderDetailsByNoTransaksi = async (req, res) => {
     // Jika order_details masih kosong, buat baru
     if (!oldDetails || oldDetails.length === 0) {
       let total_bayar = 0;
+      // unit_area is expected to be present on product after migration; parse dimensions and fallback similar to bot POST
       for (const item of order_details) {
         const product = await models.Product.findByPk(item.id_produk);
-        const harga = Number(product.harga_per_pcs || 0);
-        const quantity = Number(item.qty || 1);
-        const subtotal_item = harga * quantity;
+        const qty = Number(item.qty || 1);
+        const prodPlain = product.toJSON ? product.toJSON() : Object.assign({}, product);
+        const hargaPerPcs = Number(prodPlain.harga_per_pcs || 0);
+        const hargaPerM2 = Number(prodPlain.harga_per_m2 || 0);
+        // parse dimension source: accept item.dimension {w,h,unit}, item.size '3x3m' or width/height
+        function parseDimension(d) {
+          if (!d) return null;
+          if (typeof d === 'object' && (d.w != null || d.h != null)) return { w: Number(d.w || d.width), h: Number(d.h || d.height), unit: d.unit || 'm' };
+          if (typeof d === 'string') {
+            const m = d.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)(m|cm)?$/);
+            if (m) return { w: Number(m[1]), h: Number(m[2]), unit: m[3] || 'm' };
+          }
+          if (d && d.width != null && d.height != null) return { w: Number(d.width), h: Number(d.height), unit: d.unit || 'm' };
+          return null;
+        }
+        const dimSource = item.dimension || item.size || { width: item.width, height: item.height, unit: item.unit };
+        const parsed = parseDimension(dimSource);
+        let harga_satuan = 0;
+        let subtotal_item = 0;
+        if (parsed && hargaPerM2 > 0) {
+          const computeRes = require('../utils/priceCalculator').computeOrderDetailPrice(prodPlain, { dimension: parsed }, qty);
+          harga_satuan = computeRes.harga_satuan;
+          subtotal_item = computeRes.subtotal_item;
+        } else if (hargaPerM2 > 0) {
+          // fallback: if product has unit_area we can compute without explicit dimension
+          if (prodPlain.unit_area != null) {
+            const computeRes = require('../utils/priceCalculator').computeOrderDetailPrice(prodPlain, { dimension: null }, qty);
+            harga_satuan = computeRes.harga_satuan;
+            subtotal_item = computeRes.subtotal_item;
+          } else if (hargaPerPcs > 0) {
+            harga_satuan = hargaPerPcs;
+            subtotal_item = hargaPerPcs * qty;
+          } else {
+            return res.status(400).json({ error: `Dimension required for product ${prodPlain.nama_produk || prodPlain.nama || prodPlain.id_produk} (id ${prodPlain.id_produk || prodPlain.id}) priced per m2` });
+          }
+        } else if (hargaPerPcs > 0) {
+          harga_satuan = hargaPerPcs;
+          subtotal_item = hargaPerPcs * qty;
+        } else {
+          harga_satuan = 0;
+          subtotal_item = 0;
+        }
         total_bayar += subtotal_item;
         await models.OrderDetail.create({
           id_order: order.id_order,
           id_produk: item.id_produk,
-          quantity,
-          harga_satuan: harga,
+          quantity: qty,
+          harga_satuan,
           subtotal_item
         });
       }
@@ -770,17 +961,55 @@ exports.updateOrderDetailsByNoTransaksi = async (req, res) => {
     // Jika sudah ada order_details, replace dengan data baru
     await models.OrderDetail.destroy({ where: { id_order: order.id_order } });
     let total_bayar = 0;
+    // unit_area is expected to be present on product after migration; parse dimensions and fallback similar to bot POST
     for (const item of order_details) {
       const product = await models.Product.findByPk(item.id_produk);
-      const harga = Number(product.harga_per_pcs || 0);
-      const quantity = Number(item.qty || 1);
-      const subtotal_item = harga * quantity;
+      const qty = Number(item.qty || 1);
+      const prodPlain = product.toJSON ? product.toJSON() : Object.assign({}, product);
+      const hargaPerPcs = Number(prodPlain.harga_per_pcs || 0);
+      const hargaPerM2 = Number(prodPlain.harga_per_m2 || 0);
+      function parseDimension(d) {
+        if (!d) return null;
+        if (typeof d === 'object' && (d.w != null || d.h != null)) return { w: Number(d.w || d.width), h: Number(d.h || d.height), unit: d.unit || 'm' };
+        if (typeof d === 'string') {
+          const m = d.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)(m|cm)?$/);
+          if (m) return { w: Number(m[1]), h: Number(m[2]), unit: m[3] || 'm' };
+        }
+        if (d && d.width != null && d.height != null) return { w: Number(d.width), h: Number(d.height), unit: d.unit || 'm' };
+        return null;
+      }
+      const dimSource = item.dimension || item.size || { width: item.width, height: item.height, unit: item.unit };
+      const parsed = parseDimension(dimSource);
+      let harga_satuan = 0;
+      let subtotal_item = 0;
+      if (parsed && hargaPerM2 > 0) {
+        const computeRes = require('../utils/priceCalculator').computeOrderDetailPrice(prodPlain, { dimension: parsed }, qty);
+        harga_satuan = computeRes.harga_satuan;
+        subtotal_item = computeRes.subtotal_item;
+      } else if (hargaPerM2 > 0) {
+        if (prodPlain.unit_area != null) {
+          const computeRes = require('../utils/priceCalculator').computeOrderDetailPrice(prodPlain, { dimension: null }, qty);
+          harga_satuan = computeRes.harga_satuan;
+          subtotal_item = computeRes.subtotal_item;
+        } else if (hargaPerPcs > 0) {
+          harga_satuan = hargaPerPcs;
+          subtotal_item = hargaPerPcs * qty;
+        } else {
+          return res.status(400).json({ error: `Dimension required for product ${prodPlain.nama_produk || prodPlain.nama || prodPlain.id_produk} (id ${prodPlain.id_produk || prodPlain.id}) priced per m2` });
+        }
+      } else if (hargaPerPcs > 0) {
+        harga_satuan = hargaPerPcs;
+        subtotal_item = hargaPerPcs * qty;
+      } else {
+        harga_satuan = 0;
+        subtotal_item = 0;
+      }
       total_bayar += subtotal_item;
       await models.OrderDetail.create({
         id_order: order.id_order,
         id_produk: item.id_produk,
-        quantity,
-        harga_satuan: harga,
+        quantity: qty,
+        harga_satuan,
         subtotal_item
       });
     }

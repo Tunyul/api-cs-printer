@@ -4,5 +4,6 @@ const router = express.Router();
 const controller = require('../controllers/healthController');
 
 router.get('/', controller.health);
+router.get('/db', controller.health);
 
 module.exports = router;

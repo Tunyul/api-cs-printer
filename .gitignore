@@ -4,8 +4,29 @@ node_modules/
 dist/
 coverage/
 npm-debug.log*
-package-lock.json
+# Keep package-lock tracked at repo root (remove from ignore if present)
+# remove package-lock.json from ignore so it's tracked
 
-# Ignore local scripts and test folders per request
-/scripts/
-/test/
+# Local dev and temp files
+tmp/
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+*.log
+
+# Build / coverage
+dist/
+coverage/
+npm-debug.log*
+
+# Node modules
+node_modules/
+
+# Environment
+.env
+
+# Optional: ignore editor swap files
+*~
+*.swp

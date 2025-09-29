@@ -7,6 +7,9 @@ const auth = require('../middleware/auth');
 // Public invoice access by transaction number (PDF)
 router.get('/:no_transaksi.pdf', controller.getInvoicePdf);
 
+// Landing page (HTML) for social/WA previews and clickable link
+router.get('/:no_transaksi', controller.getInvoiceLanding);
+
 // Notify webhook (protected)
 router.post('/:no_transaksi/notify', auth, controller.postNotifyWebhook);
 

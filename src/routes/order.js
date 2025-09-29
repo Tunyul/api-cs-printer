@@ -396,9 +396,34 @@ router.put('/transaksi/:no_transaksi', async (req, res) => {
     if (!order) {
       return res.status(404).json({ error: 'Order not found' });
     }
-    await order.update(updateData);
-    const updatedOrder = await models.Order.findOne({ where: { no_transaksi } });
-    res.status(200).json({ success: true, message: 'Order updated', order: updatedOrder });
+		await order.update(updateData);
+		const updatedOrder = await models.Order.findOne({ where: { no_transaksi } });
+
+		// respond immediately
+		res.status(200).json({ success: true, message: 'Order updated', order: updatedOrder });
+
+		// non-blocking: if status is selesai, notify external webhook and log
+		try {
+			if (updatedOrder && String(updatedOrder.status).toLowerCase() === 'selesai') {
+				// write route-level debug log
+				try { const fs = require('fs'); fs.appendFileSync('server.log', `[${new Date().toISOString()}] route-before-order-webhook ${updatedOrder.no_transaksi}\n`); } catch (e) {}
+				const orderWebhook = require('../utils/orderWebhook');
+				const customer = updatedOrder.id_customer ? await models.Customer.findByPk(updatedOrder.id_customer) : null;
+				const phone = customer ? customer.no_hp : null;
+				const customerName = customer ? customer.nama : '';
+				const getAppUrl = require('../utils/getAppUrl');
+				const invoiceUrl = `${getAppUrl()}/invoice/${updatedOrder.no_transaksi}.pdf`;
+				// call webhook (don't await) but log if it returns false
+				orderWebhook.sendOrderCompletedWebhook(phone, customerName, updatedOrder.no_transaksi, invoiceUrl)
+					.then(ok => {
+						try { const fs = require('fs'); fs.appendFileSync('server.log', `[${new Date().toISOString()}] route-order-webhook-sent ${updatedOrder.no_transaksi} ok=${ok}\n`); } catch (e) {}
+					}).catch(err => {
+						try { const fs = require('fs'); fs.appendFileSync('server.log', `[${new Date().toISOString()}] route-order-webhook-error ${updatedOrder.no_transaksi} ${err && err.message ? err.message : err}\n`); } catch (e) {}
+					});
+			}
+		} catch (e) {
+			try { const fs = require('fs'); fs.appendFileSync('server.log', `[${new Date().toISOString()}] route-order-webhook-ex ${updatedOrder ? updatedOrder.no_transaksi : ''} ${e && e.message ? e.message : e}\n`); } catch (err) {}
+		}
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

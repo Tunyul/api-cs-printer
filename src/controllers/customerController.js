@@ -86,6 +86,15 @@ exports.createCustomer = async (req, res) => {
       created_at: customer.created_at,
       updated_at: customer.updated_at
     });
+    // Emit realtime event and persist notification via helper (single source)
+    try {
+  const payload = { id_customer: customer.id_customer, nama: customer.nama, no_hp: customer.no_hp, timestamp: new Date().toISOString() };
+  const notify = require('../utils/notify');
+  // customer notifications intentionally skipped
+  notify(req.app, 'role', 'admin', 'customer.created', payload, 'Customer created');
+    } catch (e) {
+      console.error('notify customer.created error', e && e.message ? e.message : e);
+    }
   } catch (error) {
     res.status(400).json({
       success: false,
@@ -112,6 +121,15 @@ exports.updateCustomer = async (req, res) => {
       message: 'Customer updated successfully',
       updatedCustomer 
     });
+    // Emit customer.updated to user and admins, persist notification via helper
+    try {
+      const payload = { id_customer: updatedCustomer.id_customer, nama: updatedCustomer.nama, no_hp: updatedCustomer.no_hp, timestamp: new Date().toISOString() };
+  const notify = require('../utils/notify');
+  // notify customer skipped intentionally
+  notify(req.app, 'role', 'admin', 'customer.updated', payload, 'Customer updated');
+    } catch (e) {
+      console.error('notify customer.updated error', e && e.message ? e.message : e);
+    }
   } catch (error) {
     res.status(400).json({ 
       success: false,

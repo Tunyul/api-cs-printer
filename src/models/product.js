@@ -31,11 +31,18 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true
     },
     ukuran_standar: {
-      type: DataTypes.STRING,
-      allowNull: true
+      // repurposed: store pricing unit marker. values: 'pcs' or 'm'
+      type: DataTypes.ENUM('pcs', 'm'),
+      allowNull: true,
+      defaultValue: 'pcs'
     },
     harga_per_m2: {
       type: DataTypes.DECIMAL(15,2),
+      allowNull: true
+    },
+    unit_area: {
+      // area per piece in m2 (optional). Backfilled by migration when ukuran_standar was a size string.
+      type: DataTypes.DECIMAL(10,2),
       allowNull: true
     },
     harga_per_pcs: {

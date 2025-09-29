@@ -26,9 +26,12 @@ const order = require('./order')(sequelize, Sequelize.DataTypes);
 const orderDetail = require('./orderDetail')(sequelize, Sequelize.DataTypes);
 const piutang = require('./piutang')(sequelize, Sequelize.DataTypes);
 const payment = require('./payment')(sequelize, Sequelize.DataTypes);
+const paymentAllocation = require('./paymentAllocation')(sequelize, Sequelize.DataTypes);
 const orderDeletionAudit = require('./orderDeletionAudit')(sequelize, Sequelize.DataTypes);
 const user = require('./user')(sequelize);
 const invoiceToken = require('./invoiceToken')(sequelize, Sequelize.DataTypes);
+const notification = require('./notification')(sequelize, Sequelize.DataTypes);
+const uix = require('./uix')(sequelize, Sequelize.DataTypes);
 
 db.Customer = customer;
 db.Product = product;
@@ -36,9 +39,12 @@ db.Order = order;
 db.OrderDetail = orderDetail;
 db.Piutang = piutang;
 db.Payment = payment;
+db.PaymentAllocation = paymentAllocation;
 db.OrderDeletionAudit = orderDeletionAudit;
 db.User = user;
 db.InvoiceToken = invoiceToken;
+db.Notification = notification;
+db.Uix = uix;
 
 Object.keys(db).forEach(modelName => {
   if (db[modelName].associate) {

@@ -28,9 +28,28 @@ exports.createOrderDetail = async (req, res) => {
     let subtotal_item = 0;
     const pricingUnit = (product.pricing_unit || 'm2').toLowerCase();
     if (pricingUnit === 'm2' && Number(product.harga_per_m2 || 0) > 0) {
+      // prefer explicit dimension in request; otherwise try product.unit_area (backfilled)
       const dimSource = body.dimension || body.size || { width: body.width, height: body.height, unit: body.unit };
       const parsed = parseDimension(dimSource);
-      if (!parsed) return res.status(400).json({ error: 'Dimension required for m2-priced products (e.g. size: "3x3m" or dimension:{w:3,h:3,unit:"m"})' });
+      if (!parsed) {
+        // try using product.unit_area
+        const unitArea = product.unit_area != null ? Number(product.unit_area) : null;
+        if (!unitArea) return res.status(400).json({ error: 'Dimension required for m2-priced products (e.g. size: "3x3m" or dimension:{w:3,h:3,unit:"m"})' });
+        // compute using unit_area fallback (computeOrderDetailPrice will use unit_area when dimension=null)
+        const prodPlain = product.toJSON ? product.toJSON() : Object.assign({}, product);
+        const computeRes = computeOrderDetailPrice(prodPlain, { dimension: null }, qty);
+        const harga_satuan = computeRes.harga_satuan;
+        const subtotal_item = computeRes.subtotal_item;
+        const created = await models.OrderDetail.create({
+          id_order: body.id_order,
+          id_produk: body.id_produk,
+          quantity: qty,
+          harga_satuan,
+          subtotal_item
+        });
+        const orderDetailWithProduct = await models.OrderDetail.findByPk(created.id, { include: [models.Product] });
+        return res.status(201).json(orderDetailWithProduct);
+      }
       const computeRes = computeOrderDetailPrice(product.toJSON ? product.toJSON() : product, { dimension: parsed }, qty);
       harga_satuan = computeRes.harga_satuan;
       subtotal_item = computeRes.subtotal_item;

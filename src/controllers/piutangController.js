@@ -1,5 +1,5 @@
 
-const { Piutang, Customer, Op } = require('../models');
+const { Piutang, Customer, Order, Op } = require('../models');
 
 class PiutangController {
   // Get all piutangs
@@ -24,19 +24,53 @@ class PiutangController {
 
       // Always return all piutangs (no pagination)
       const piutangs = await Piutang.findAll({
-        attributes: ['id_piutang', 'id_customer', 'jumlah_piutang', 'tanggal_piutang', 'status', 'keterangan', 'created_at', 'updated_at'],
+        attributes: ['id_piutang', 'id_customer', 'jumlah_piutang', 'paid', 'tanggal_piutang', 'status', 'keterangan', 'id_order', 'created_at', 'updated_at'],
         include: [{
           model: Customer,
           attributes: ['id_customer', 'nama', 'no_hp']
+        }, {
+          model: Order,
+          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'dp_bayar', 'status']
         }],
         where: whereClause,
         order: [['created_at', 'DESC']]
       });
 
+      // attach dp_bayar and verified payment info as top-level fields for convenience
+      const models = require('../models');
+      const data = await Promise.all(piutangs.map(async (p) => {
+        const plain = p.toJSON ? p.toJSON() : p;
+        plain.dp_bayar = (plain.Order && Number(plain.Order.dp_bayar || 0)) || 0;
+        try {
+          const noTrans = (plain.Order && plain.Order.no_transaksi) || null;
+          if (noTrans) {
+            const verifiedPaid = await models.Payment.sum('nominal', { where: { no_transaksi: noTrans, status: 'verified' } }) || 0;
+            const verifiedCount = await models.Payment.count({ where: { no_transaksi: noTrans, status: 'verified' } }) || 0;
+            // fetch verified payment rows for this transaction
+            const verifiedRows = await models.Payment.findAll({
+              where: { no_transaksi: noTrans, status: 'verified' },
+              attributes: ['id_payment', 'no_transaksi', 'no_hp', 'nominal', 'status', 'tipe', 'tanggal', 'bukti'],
+              order: [['tanggal', 'ASC']]
+            });
+            plain.verified_paid = Number(verifiedPaid || 0);
+            plain.verified_payments_count = Number(verifiedCount || 0);
+            plain.verified_payments = (verifiedRows || []).map(r => r.toJSON ? r.toJSON() : r);
+          } else {
+            plain.verified_paid = 0;
+            plain.verified_payments_count = 0;
+            plain.verified_payments = [];
+          }
+        } catch (e) {
+          plain.verified_paid = 0;
+          plain.verified_payments_count = 0;
+        }
+        return plain;
+      }));
+
       return res.status(200).json({
         success: true,
-        data: piutangs,
-        meta: { total: piutangs.length }
+        data,
+        meta: { total: data.length }
       });
     } catch (error) {
       res.status(500).json({
@@ -55,6 +89,9 @@ class PiutangController {
         include: [{
           model: Customer,
           attributes: ['id_customer', 'nama', 'no_hp']
+        }, {
+          model: Order,
+          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'dp_bayar', 'status']
         }],
         where: { id_piutang: id }
       });
@@ -62,9 +99,11 @@ class PiutangController {
       if (!piutang) {
         return res.status(404).json({ error: 'Piutang not found' });
       }
+      const plain = piutang.toJSON ? piutang.toJSON() : piutang;
+      plain.dp_bayar = (plain.Order && Number(plain.Order.dp_bayar || 0)) || 0;
       res.status(200).json({
         success: true,
-        data: piutang
+        data: plain
       });
     } catch (error) {
       res.status(500).json({
@@ -95,14 +134,37 @@ class PiutangController {
         include: [{
           model: Customer,
           attributes: ['id_customer', 'nama', 'no_hp']
+        }, {
+          model: Order,
+          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'dp_bayar', 'status']
         }],
         where: { id_piutang: piutang.id_piutang }
       });
       
+      // Emit piutang.created
+      try {
+        const io = req.app.get('io');
+        if (io && piutangWithCustomer) {
+          const payload = { id_piutang: piutangWithCustomer.id_piutang, id_customer: piutangWithCustomer.id_customer, jumlah_piutang: Number(piutangWithCustomer.jumlah_piutang||0), status: piutangWithCustomer.status, timestamp: new Date().toISOString() };
+          // emit to admin only
+          io.to('role:admin').emit('piutang.created', payload);
+          // persist notification
+          try {
+            // use centralized notify helper to emit + persist
+            const notify = require('../utils/notify');
+            notify(req.app, 'role', 'admin', 'piutang.created', payload, 'Piutang created').catch(()=>{});
+          } catch(e){}
+        }
+      } catch (e) {
+        console.error('emit piutang.created error', e && e.message ? e.message : e);
+      }
+
+      const plainCreated = piutangWithCustomer.toJSON ? piutangWithCustomer.toJSON() : piutangWithCustomer;
+      plainCreated.dp_bayar = (plainCreated.Order && Number(plainCreated.Order.dp_bayar || 0)) || 0;
       res.status(201).json({
         success: true,
         message: 'Piutang created successfully',
-        data: piutangWithCustomer
+        data: plainCreated
       });
     } catch (error) {
       res.status(500).json({
@@ -132,14 +194,31 @@ class PiutangController {
         include: [{
           model: Customer,
           attributes: ['id_customer', 'nama', 'no_hp']
+        }, {
+          model: Order,
+          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'dp_bayar', 'status']
         }],
         where: { id_piutang: id }
       });
       
+      // Emit piutang.updated
+      try {
+        const io = req.app.get('io');
+        if (io && piutangWithCustomer) {
+          const payload = { id_piutang: piutangWithCustomer.id_piutang, id_customer: piutangWithCustomer.id_customer, jumlah_piutang: Number(piutangWithCustomer.jumlah_piutang||0), status: piutangWithCustomer.status, timestamp: new Date().toISOString() };
+          // emit to admin only
+          io.to('role:admin').emit('piutang.updated', payload);
+        }
+      } catch (e) {
+        console.error('emit piutang.updated error', e && e.message ? e.message : e);
+      }
+
+      const plainUpdated = piutangWithCustomer.toJSON ? piutangWithCustomer.toJSON() : piutangWithCustomer;
+      plainUpdated.dp_bayar = (plainUpdated.Order && Number(plainUpdated.Order.dp_bayar || 0)) || 0;
       res.json({
         success: true,
         message: 'Piutang updated successfully',
-        data: piutangWithCustomer
+        data: plainUpdated
       });
     } catch (error) {
       res.status(500).json({
@@ -181,20 +260,29 @@ class PiutangController {
       const { id } = req.params;
       
       const piutangs = await Piutang.findAll({
-        include: [{
-          model: Customer,
-          attributes: ['id_customer', 'nama', 'no_hp']
-        }],
-        where: { id_customer: id },
+          attributes: ['id_piutang', 'id_customer', 'jumlah_piutang', 'paid', 'tanggal_piutang', 'status', 'keterangan', 'id_order', 'created_at', 'updated_at'],
+          include: [{
+            model: Customer,
+            attributes: ['id_customer', 'nama', 'no_hp']
+          }, {
+            model: Order,
+            attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'dp_bayar', 'status']
+          }],
+          where: { id_customer: id },
         order: [['created_at', 'DESC']]
       });
 
       if (!piutangs || piutangs.length === 0) {
         return res.status(404).json({ error: 'No piutang found for this customer' });
       }
+      const data = piutangs.map(p => {
+        const plain = p.toJSON ? p.toJSON() : p;
+        plain.dp_bayar = (plain.Order && Number(plain.Order.dp_bayar || 0)) || 0;
+        return plain;
+      });
       res.status(200).json({
         success: true,
-        data: piutangs
+        data
       });
     } catch (error) {
       res.status(500).json({
@@ -214,6 +302,9 @@ class PiutangController {
         include: [{
           model: Customer,
           attributes: ['id_customer', 'nama', 'no_hp']
+        }, {
+          model: Order,
+          attributes: ['id_order', 'no_transaksi', 'tanggal_order', 'total_bayar', 'dp_bayar', 'status']
         }],
         where: {
           tanggal_jatuh_tempo: { [Op.lt]: now },
@@ -225,9 +316,14 @@ class PiutangController {
       if (!overduePiutangs || overduePiutangs.length === 0) {
         return res.status(404).json({ error: 'No overdue piutang found' });
       }
+      const data = overduePiutangs.map(p => {
+        const plain = p.toJSON ? p.toJSON() : p;
+        plain.dp_bayar = (plain.Order && Number(plain.Order.dp_bayar || 0)) || 0;
+        return plain;
+      });
       res.status(200).json({
         success: true,
-        data: overduePiutangs
+        data
       });
     } catch (error) {
       res.status(500).json({

@@ -16,7 +16,8 @@ exports.login = async (req, res) => {
     if (!valid) {
       return res.status(401).json({ error: 'Username atau password salah' });
     }
-    const token = jwt.sign({ id_user: user.id_user, username: user.username, role: user.role }, 'secretkey', { expiresIn: '1d' });
+  const secret = process.env.JWT_SECRET || 'secretkey';
+  const token = jwt.sign({ id_user: user.id_user, username: user.username, role: user.role }, secret, { expiresIn: '1d' });
     res.json({ token, user: { id_user: user.id_user, username: user.username, nama: user.nama, role: user.role } });
   } catch (error) {
     res.status(500).json({ error: error.message });

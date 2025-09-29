@@ -5,7 +5,7 @@ const options = {
     openapi: '3.0.0',
     info: {
       title: 'Cukong API',
-      version: '1.0.0',
+  version: '2.0.1',
       description: 'API untuk sistem printing management'
     },
     servers: [
@@ -106,7 +106,8 @@ const options = {
             nama_produk: { type: 'string' },
             bahan: { type: 'string' },
             finishing: { type: 'string' },
-            ukuran_standar: { type: 'string' },
+            ukuran_standar: { type: 'string', enum: ['pcs','m'], description: "Pricing unit: 'pcs' or 'm'" },
+            unit_area: { type: 'number', format: 'decimal' },
             harga_per_m2: { type: 'number', format: 'decimal' },
             harga_per_pcs: { type: 'number', format: 'decimal' },
             waktu_proses: { type: 'string' },
@@ -162,10 +163,35 @@ const options = {
           type: 'object',
           properties: {
             id_piutang: { type: 'integer' },
+            id_customer: { type: 'integer' },
+            jumlah_piutang: { type: 'number', format: 'decimal' },
+            paid: { type: 'number', format: 'decimal' },
+            tanggal_piutang: { type: 'string', format: 'date-time' },
+            status: { type: 'string', enum: ['belum_lunas','lunas','terlambat'] },
+            keterangan: { type: 'string' },
             id_order: { type: 'integer' },
-            total_piutang: { type: 'number', format: 'decimal' },
-            tanggal_jatuh_tempo: { type: 'string', format: 'date-time' },
-            status_lunas: { type: 'string' },
+            created_at: { type: 'string', format: 'date-time' },
+            updated_at: { type: 'string', format: 'date-time' }
+          }
+        }
+        ,
+        Uix: {
+          type: 'object',
+          properties: {
+            id: { type: 'integer' },
+            title: { type: 'string' },
+            subtitle: { type: 'string' },
+            description: { type: 'string' },
+            status: { type: 'string', enum: ['draft','published','archived'] },
+            priority: { type: 'integer' },
+            score: { type: 'number', format: 'decimal' },
+            tags: { type: 'string' },
+            meta: { type: 'object' },
+            active: { type: 'boolean' },
+            published_at: { type: 'string', format: 'date-time' },
+            views: { type: 'integer' },
+            color: { type: 'string' },
+            reference_code: { type: 'string' },
             created_at: { type: 'string', format: 'date-time' },
             updated_at: { type: 'string', format: 'date-time' }
           }
